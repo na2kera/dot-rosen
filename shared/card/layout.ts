@@ -66,6 +66,8 @@ const LOOP_CAP = 30;
 // QR コード
 const QR_CELL = 4;
 const QR_QUIET = 4;
+/** QR の右に文字を置くのに要る幅（これより狭ければ QR の下に置く） */
+const QR_SIDE_TEXT_MIN = 96;
 
 /** 文字・図形を積み上げる */
 class Builder {
@@ -331,33 +333,62 @@ export function layoutCard(input: LayoutInput): CardLayout {
   }
 
   // ---- 7. QR コードとアプリ名・期限（URL が無ければ省く） ----
+  // ふつうは QR の右に文字を置く。URL が長くて右に文字が入らないときは、QR の下に置く。
+  // QR が余白を含めて幅 384 に入らないときは QR を省き、文字だけにする。
   if (input.url) {
     y += 8;
-    const m = qrMatrix(input.url);
+    // QR コードにできないほど長い URL（型番の上限を超える）も、QR を省くだけにする
+    let m: QrMatrix = { size: 999, dark: new Uint8Array(0) };
+    try {
+      m = qrMatrix(input.url);
+    } catch {
+      // 下の「幅に入らない」扱いになる
+    }
     const quiet = QR_QUIET * QR_CELL;
-    const qx = LEFT + quiet;
-    const qy = y + quiet;
     const size = m.size * QR_CELL;
-    b.rect(LEFT, y, size + quiet * 2, size + quiet * 2, C_WHITE);
-    b.ops.push({ k: "qr", m, x: qx, y: qy, cell: QR_CELL });
-    const tx = qx + size + quiet;
-    const tw = RIGHT - tx;
-    const lines: { s: string; c: number }[] = [];
-    for (const s of wrapText(font, input.appName, tw)) lines.push({ s, c: CARD_INK });
-    if (input.expiresOn) {
-      const full = `${input.expiresOn}まで見られます`;
-      const parts = textWidth(font, full) <= tw ? [full] : [`${input.expiresOn}まで`, "見られます"];
-      lines.push({ s: "", c: CARD_INK });
-      for (const p of parts) for (const s of wrapText(font, p, tw)) lines.push({ s, c: CARD_SUB });
-    }
+    const total = size + quiet * 2;
+    const textLines = (tw: number) => {
+      const lines: { s: string; c: number }[] = [];
+      for (const s of wrapText(font, input.appName, tw)) lines.push({ s, c: CARD_INK });
+      if (input.expiresOn) {
+        const full = `${input.expiresOn}まで見られます`;
+        const parts = textWidth(font, full) <= tw ? [full] : [`${input.expiresOn}まで`, "見られます"];
+        lines.push({ s: "", c: CARD_INK });
+        for (const p of parts) for (const s of wrapText(font, p, tw)) lines.push({ s, c: CARD_SUB });
+      }
+      return lines;
+    };
     const lh = 20;
-    const blockH = lines.reduce((a, l) => a + (l.s ? lh : 8), 0) - 4;
-    let ty = qy + Math.floor((size - blockH) / 2);
-    for (const l of lines) {
-      if (l.s) b.text(tx, ty, l.s, 1, 1, l.c);
-      ty += l.s ? lh : 8;
+    const heightOf = (lines: { s: string }[]) => lines.reduce((a, l) => a + (l.s ? lh : 8), 0) - 4;
+    const sideX = LEFT + quiet + size + quiet;
+    const sideW = RIGHT - sideX;
+    const sideLines = sideW >= QR_SIDE_TEXT_MIN ? textLines(sideW) : null;
+    if (sideLines && heightOf(sideLines) <= size) {
+      // QR の右に文字
+      const qx = LEFT + quiet;
+      const qy = y + quiet;
+      b.rect(LEFT, y, total, total, C_WHITE);
+      b.ops.push({ k: "qr", m, x: qx, y: qy, cell: QR_CELL });
+      let ty = qy + Math.floor((size - heightOf(sideLines)) / 2);
+      for (const l of sideLines) {
+        if (l.s) b.text(sideX, ty, l.s, 1, 1, l.c);
+        ty += l.s ? lh : 8;
+      }
+      y = qy + size;
+    } else {
+      // QR（入るときだけ、中央）の下に文字を中央寄せで
+      if (total <= W) {
+        const x0 = Math.floor((W - total) / 2);
+        b.rect(x0, y, total, total, C_WHITE);
+        b.ops.push({ k: "qr", m, x: x0 + quiet, y: y + quiet, cell: QR_CELL });
+        y += total;
+      }
+      y += 8;
+      for (const l of textLines(INNER)) {
+        if (l.s) b.textCenter(LEFT, RIGHT, y, l.s, 1, 1, l.c);
+        y += l.s ? lh : 8;
+      }
     }
-    y = qy + size;
   }
 
   const height = y + BOTTOM;

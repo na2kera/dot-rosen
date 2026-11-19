@@ -50,9 +50,17 @@ export function clearStations(d: RouteDraft): RouteDraft {
   return { ...d, stations: [], loop: false };
 }
 
-/** 路線名を MAX_NAME_LENGTH 文字（コードポイント）までに切る。改行と制御文字は除く */
+/**
+ * 路線名に使えない文字（shared/route の normalizeRouteName が拒否するもの）。入力の時点で取り除く。
+ * 制御文字・書式の文字（ゼロ幅接合子など）・行と段落の区切り・私用領域・見えない文字・異体字セレクタ。
+ */
+const FORBIDDEN_IN_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/gu;
+/** 対になっていないサロゲート */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** 路線名を整える: 使えない文字を除き、MAX_NAME_LENGTH 文字（コードポイント）までに切る */
 export function clampName(raw: string): string {
-  const cleaned = raw.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
+  const cleaned = raw.replace(LONE_SURROGATE, "").replace(FORBIDDEN_IN_NAME, "");
   return [...cleaned].slice(0, MAX_NAME_LENGTH).join("");
 }
 

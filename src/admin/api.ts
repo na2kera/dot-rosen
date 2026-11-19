@@ -102,3 +102,16 @@ export function createAdminApi(fetcher: Fetcher = (i, init) => fetch(i, init)) {
 }
 
 export type AdminApi = ReturnType<typeof createAdminApi>;
+
+/**
+ * ログアウトする。ログアウトできた（またはもうログインが切れていた = 401）なら true。
+ * 通信の失敗などで Cookie が消えたか分からないときは false（画面はログインに戻さず、やり直してもらう）
+ */
+export async function tryLogout(api: Pick<AdminApi, "logout">): Promise<boolean> {
+  try {
+    await api.logout();
+    return true;
+  } catch (e) {
+    return e instanceof AdminApiError && e.status === 401;
+  }
+}

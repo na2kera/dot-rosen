@@ -744,3 +744,15 @@
 .route-page__actions .image-saver {
   padding-right: 0;
 }
+
+.finish__note {
+  flex: none;
+  padding: 4px var(--pad);
+  border-bottom: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: var(--c-ink-weak);
+}
+
+.finish__note--alert {
+  color: var(--c-alert);
+}

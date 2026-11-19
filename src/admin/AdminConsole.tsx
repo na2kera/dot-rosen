@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { confirmDialog } from "../ui/Dialog.tsx";
 import { PixelIcon, type IconName } from "../ui/PixelIcon.tsx";
 import { toast } from "../ui/Toast.tsx";
-import { AdminApiError, type AdminApi, type AdminState } from "./api.ts";
+import { AdminApiError, tryLogout, type AdminApi, type AdminState } from "./api.ts";
 import { EventCodeTab } from "./EventCodeTab.tsx";
 import { actionErrorText, elapsedText, printerView } from "./format.ts";
 import { useAdminState, useBusy, useNow } from "./hooks.ts";
@@ -63,10 +63,10 @@ export function AdminConsole({ api, initial, initialOffset, onUnauthorized, onLo
   const logout = () =>
     run("logout", async () => {
       if (!(await confirmDialog("この端末からログアウトしますか？", { ok: "ログアウト" }))) return;
-      try {
-        await api.logout();
-      } catch {
-        // Cookie が消えなくても、画面はログインに戻す（次の操作で 401 になれば同じこと）
+      if (!(await tryLogout(api))) {
+        // Cookie が消えたか分からないので、ログイン画面には戻さず、やり直せるようにする
+        toast("ログアウトできていないかもしれません。電波を確かめて、もういちど押してください", { tone: "alert", ms: 5000 });
+        return;
       }
       toast("ログアウトしました");
       onLoggedOut();

@@ -16,7 +16,9 @@ export type ApiErrorCode =
   | "too_large"
   | "rate_limited"
   | "internal"
-  | "network";
+  | "network"
+  // 端末に保存できなかった（サーバーには送っていない）
+  | "storage";
 
 export type ApiFailure = {
   ok: false;
@@ -116,6 +118,8 @@ export type Api = ReturnType<typeof createApi>;
 /** エラーを、来場者に分かる言葉にする */
 export function errorMessage(f: Pick<ApiFailure, "code" | "reason">): string {
   switch (f.code) {
+    case "storage":
+      return "この端末に保存できないため、URL を作れません（プライベートモードや空き容量を確かめてね）";
     case "network":
       return "通信できませんでした。電波のよい所で もういちど ためしてね";
     case "invalid_code":

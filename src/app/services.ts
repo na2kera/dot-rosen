@@ -1,6 +1,6 @@
 // 画面全体で1つだけ持つもの（API、保存と印刷のストア）。作る画面と路線ページで同じものを使う。
 import { createApi, type Api } from "../api/client.ts";
-import { browserStorage, randomBytes } from "../store/browser.ts";
+import { browserStorage, onExternalStorageChange, randomBytes } from "../store/browser.ts";
 import { getOrCreateClientId } from "../store/device.ts";
 import { createPublishStore, type PublishStore } from "../store/publish-store.ts";
 import type { Step } from "../store/ui-store.ts";
@@ -22,6 +22,8 @@ export function getPublish(): PublishStore {
       random: randomBytes,
       clientId: getOrCreateClientId(storage, randomBytes),
       isHidden: () => document.hidden,
+      // ほかのタブで保存・印刷したら取り込む
+      subscribeExternal: onExternalStorageChange,
     });
     // 表に戻ったら、印刷の状態をすぐに問い合わせる
     document.addEventListener("visibilitychange", () => {

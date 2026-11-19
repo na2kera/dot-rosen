@@ -32,6 +32,9 @@ export type CardOptions = {
   /** 保存済みなら路線の id（QR コードに入れる URL になる） */
   routeId: string | null;
   expiresAt: string | null;
+  /** 印刷を申し込んだときの発行番号と日付（無ければ「No.----」と今日） */
+  issueNo?: number | null;
+  issuedOn?: string | null;
 };
 
 export const routeUrl = (id: string) => `${window.location.origin}/r/${id}`;
@@ -47,8 +50,8 @@ export function useCard(data: RouteData | null, lookup: StationLookup, font: Bit
       route: data,
       lookup,
       font,
-      issueNo: null,
-      issuedOn: jstDate(new Date()),
+      issueNo: opts.issueNo ?? null,
+      issuedOn: opts.issuedOn ?? jstDate(new Date()),
       expiresOn: opts.expiresAt ? jstMonthDay(new Date(opts.expiresAt)) : undefined,
       url: opts.routeId ? routeUrl(opts.routeId) : undefined,
       appName: APP_NAME,
@@ -62,5 +65,5 @@ export function useCard(data: RouteData | null, lookup: StationLookup, font: Bit
     }
     // json で中身の変化を見る
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [json, font, lookup, opts.routeId, opts.expiresAt]);
+  }, [json, font, lookup, opts.routeId, opts.expiresAt, opts.issueNo, opts.issuedOn]);
 }

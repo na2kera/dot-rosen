@@ -29,7 +29,19 @@ export function FinishStep() {
   const parsed = parseRouteData(draft, data.index.lookup);
   const routeData = parsed.ok ? parsed.value : null;
   const saved = pub.saved?.id ? pub.saved : null;
-  const card = useCard(routeData, data.index.lookup, font, { routeId: saved?.id ?? null, expiresAt: saved?.expiresAt ?? null });
+  const status = publish.saveStatus(routeData);
+  // QR コードは、今の内容が保存ずみの内容と同じときだけ付ける（違う内容に、前の路線の URL を付けない）
+  const clean = status === "clean";
+  // 印刷を申し込んだ内容と同じなら、発行番号と申し込んだ日を入れる
+  const rec = pub.print;
+  const printed = rec !== null && rec.jobId !== null && rec.status !== "canceled" && rec.status !== "failed";
+  const printedSame = printed && publish.printMatches(routeData);
+  const card = useCard(routeData, data.index.lookup, font, {
+    routeId: clean ? saved!.id : null,
+    expiresAt: clean ? saved!.expiresAt : null,
+    issueNo: printedSame ? rec!.issueNo : null,
+    issuedOn: printedSame ? rec!.issuedOn : null,
+  });
 
   return (
     <div className="finish">
@@ -51,7 +63,11 @@ export function FinishStep() {
             </Button>
           </div>
         ) : (
-          <CardView card={card} />
+          <>
+            {printed && !printedSame && <p className="finish__note finish__note--alert">印刷したときから内容が変わっています</p>}
+            {status === "dirty" && <p className="finish__note">保存しなおすと QR コードが付きます</p>}
+            <CardView card={card} />
+          </>
         )}
       </div>
       <div className="finish__actions">
@@ -80,9 +96,12 @@ function ExpiryNote({ expiresAt }: { expiresAt: string | null }) {
 
 function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState }) {
   const publish = getPublish();
-  const saved = pub.saved?.id ? pub.saved : null;
-  const clean = saved !== null && data !== null && publish.isSaved(data);
+  const status = publish.saveStatus(data);
+  // 期限切れの URL は出さない（保存すると新しい URL になる）
+  const saved = pub.saved?.id && status !== "expired" ? pub.saved : null;
+  const clean = status === "clean";
   const url = saved ? routeUrl(saved.id!) : null;
+  const mode = (useApp().storage as { mode?: string }).mode ?? "ok";
 
   const onSave = async () => {
     if (!data) return;
@@ -139,14 +158,16 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
           </p>
         ) : (
           <>
+            {status === "expired" && <p className="save__dirty">前の URL は見られる期限が切れました。保存すると、新しい URL をつくります</p>}
             {saved && <p className="save__dirty">変更があります。保存しなおすと、同じ URL の中身が新しくなります</p>}
             {!saved && <p className="save__note">この URL を知っている人は誰でも見られます</p>}
+            {mode !== "ok" && <p className="text-alert">この端末には保存できないため、URL を作れません（プライベートモードや空き容量を確かめてね）</p>}
             <Button variant="primary" block icon="save" onClick={onSave} disabled={!data} aria-busy={pub.saving}>
-              {pub.saving ? "保存しています…" : saved ? "保存しなおす" : "保存して URL をつくる"}
+              {pub.saving ? "保存しています…" : status === "expired" ? "新しい URL をつくる" : saved ? "保存しなおす" : "保存して URL をつくる"}
             </Button>
           </>
         )}
-        {pub.saveError && !pub.saving && <p className="text-alert">{errorMessage(pub.saveError)}</p>}
+        {pub.saveError && !pub.saving && !(pub.saveError.code === "storage" && mode !== "ok") && <p className="text-alert">{errorMessage(pub.saveError)}</p>}
       </div>
     </Panel>
   );
@@ -216,6 +237,8 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
   };
 
   const active = rec !== null && rec.jobId !== null && !isTerminal(rec.status);
+  // 申し込んだあとに内容を変えた
+  const otherContent = rec !== null && rec.jobId !== null && rec.fingerprint !== "" && !publish.printMatches(data);
   const unknown = rec !== null && rec.jobId === null;
   // 印刷ずみでも押せる（係の人が回数を増やしたときのため。増えていなければ「もう印刷ずみ」と出る）
   const canRequest = event === "open" && !active;
@@ -223,6 +246,7 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
   return (
     <Panel title="印刷する" className="print">
       {rec && rec.jobId !== null && <PrintStatusView rec={rec} pollFailing={pub.pollFailing} />}
+      {otherContent && <p className="text-weak">これは 前の内容で申し込んだ印刷です（いまの内容とはちがいます）</p>}
       {unknown && !pub.requesting && <p>申し込みの結果が わかりませんでした。もういちど送ってね（二重には申し込まれません）</p>}
 
       {event === "checking" && !rec && <p className="text-weak">会場の受付を確かめています…</p>}
@@ -249,7 +273,11 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
         </>
       )}
       {pub.printError && !pub.requesting && !(pub.printError.code === "not_accepting" && event === "closed") && (
-        <p className="text-alert">{errorMessage(pub.printError)}</p>
+        <p className="text-alert">
+          {pub.printError.code === "expired"
+            ? "保存した路線の期限が切れていました。もういちど押すと、新しい URL で保存してから申し込みます"
+            : errorMessage(pub.printError)}
+        </p>
       )}
     </Panel>
   );

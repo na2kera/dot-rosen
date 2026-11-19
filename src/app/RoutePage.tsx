@@ -10,8 +10,8 @@ import { buildStationIndex, type StationIndex } from "../data/station-index.ts";
 import { navigate } from "../router.ts";
 import { browserStorage } from "../store/browser.ts";
 import { localMonthDay } from "../store/dates.ts";
-import { safeGet, safeSet, STORAGE_KEYS } from "../store/kv-storage.ts";
-import { restoreDraft, serializeDraft } from "../store/route-store.ts";
+import { safeGet, STORAGE_KEYS } from "../store/kv-storage.ts";
+import { restoreDraft, writeDraft } from "../store/route-store.ts";
 import { useStore } from "../store/use-store.ts";
 import { Board } from "../ui/Board.tsx";
 import { Button } from "../ui/Button.tsx";
@@ -136,8 +136,11 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
       const ok = await confirmDialog("いま作りかけの路線を、この路線で置きかえますか？", { ok: "置きかえる" });
       if (!ok) return;
     }
-    safeSet(storage, STORAGE_KEYS.draft, serializeDraft(v.data));
-    publish.markSaved(id, v.data, v.expiresAt);
+    // 端末に書けてから移る（書けないまま移ると、作る画面で前の作りかけが出てしまう）
+    if (!publish.markSaved(id, v.data, v.expiresAt) || !writeDraft(storage, v.data)) {
+      toast("この端末に保存できないため、編集を始められません（プライベートモードや空き容量を確かめてね）", { tone: "alert", ms: 5000 });
+      return;
+    }
     setInitialStep(4);
     navigate("/");
   }, [id, v, publish]);

@@ -203,12 +203,13 @@ describe("保存と復元", () => {
     expect(d.symbol).toBe("");
   });
 
-  it("読めない・壊れている・版が違う保存データは初期値に戻す", () => {
+  it("読めない・版が違う保存データは初期値に戻す。検査に通らない項目は、その項目だけ直す", () => {
     const def = defaultRouteDraft();
     expect(restoreDraft(null, lookup)).toEqual(def);
     expect(restoreDraft("{壊れた", lookup)).toEqual(def);
     expect(restoreDraft(JSON.stringify({ ver: 99, draft: def }), lookup)).toEqual(def);
-    expect(restoreDraft(JSON.stringify({ ver: 1, draft: { ...def, stations: ["s1", "s1"] } }), lookup)).toEqual(def);
+    // 重なった駅は1つにする（全体は捨てない）
+    expect(restoreDraft(JSON.stringify({ ver: 1, draft: { ...def, stations: ["s1", "s1"] } }), lookup)).toEqual({ ...def, stations: ["s1"] });
     expect(restoreDraft(JSON.stringify({ ver: 1, draft: { ...def, stations: ["nope"] } }), lookup)).toEqual(def);
     expect(restoreDraft(JSON.stringify({ ver: 1, draft: "x" }), lookup)).toEqual(def);
     expect(restoreDraft(serializeDraft({ ...def, stations: ["s1"] }), lookup).stations).toEqual(["s1"]);

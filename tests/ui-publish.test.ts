@@ -3,8 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultRouteDraft, type RouteData } from "../shared/route/index.ts";
 import { createApi, errorMessage, type FetchLike } from "../src/api/client.ts";
-import { memoryStorage, STORAGE_KEYS } from "../src/store/kv-storage.ts";
-import { createPublishStore, POLL_MS, POLL_SLOW_MS, pollDelay, readSaved } from "../src/store/publish-store.ts";
+import { memoryStorage, STORAGE_KEYS, type KeyValueStorage } from "../src/store/kv-storage.ts";
+import { createPublishStore, POLL_MS, POLL_SLOW_MS, pollDelay, readPrint, readSaved, routeFingerprint } from "../src/store/publish-store.ts";
 
 const data = (name = "テスト線"): RouteData => ({ ...defaultRouteDraft(), name, stations: ["s1", "s2"] });
 
@@ -106,11 +106,13 @@ const random = (n: number) => {
   return b;
 };
 
-function setup(opts: { hidden?: () => boolean } = {}) {
+type SetupOpts = { hidden?: () => boolean; storage?: KeyValueStorage; now?: () => Date; subscribeExternal?: (cb: (key: string | null) => void) => () => void };
+
+function setup(opts: SetupOpts = {}) {
   const server = fakeServer();
-  const storage = memoryStorage();
+  const storage = opts.storage ?? memoryStorage();
   const api = createApi(server.fetchFn);
-  const p = createPublishStore({ storage, api, random, clientId: "c".repeat(32), isHidden: opts.hidden });
+  const p = createPublishStore({ storage, api, random, clientId: "c".repeat(32), isHidden: opts.hidden, now: opts.now, subscribeExternal: opts.subscribeExternal });
   return { server, storage, p };
 }
 
@@ -338,5 +340,167 @@ describe("印刷の申し込み", () => {
     await advance(0);
     expect(p2.store.get().print?.status).toBe("printing");
     p2.stopPolling();
+  });
+});
+
+// ---- コードレビューの指摘の再現 ----
+
+/** 指定したキーだけ書けない保存先（容量超過などの代わり） */
+function failingStorage(failKeys: string[]) {
+  const base = memoryStorage();
+  return {
+    ...base,
+    setItem(k: string, v: string) {
+      if (failKeys.includes(k)) throw new Error("QuotaExceededError");
+      base.setItem(k, v);
+    },
+  };
+}
+
+describe("指摘1: 端末に書けないとき", () => {
+  it("編集の鍵を端末に書けなければ POST せず、分かる理由を出す", async () => {
+    const { server, p } = setup({ storage: failingStorage([STORAGE_KEYS.saved]) });
+    expect(await p.save(data())).toBe(false);
+    expect(server.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    const e = p.store.get().saveError!;
+    expect(e.code).toBe("storage");
+    expect(errorMessage(e)).toContain("この端末に保存できない");
+    // 印刷も、保存できないので申し込まない
+    expect(await p.requestPrint(data(), "CODE1")).toBe(false);
+    expect(server.calls.filter((c) => c.path === "/api/print")).toHaveLength(0);
+    expect(p.store.get().printError?.code).toBe("storage");
+  });
+
+  it("「編集する」の引き継ぎ（markSaved）は、端末に書けなければ false", async () => {
+    const storage = memoryStorage();
+    const { p } = setup({ storage });
+    await p.save(data());
+    const id = p.store.get().saved!.id!;
+    const { p: p2 } = setup({ storage: Object.assign(failingStorage([STORAGE_KEYS.saved]), { getItem: storage.getItem }) });
+    expect(p2.markSaved(id, data("新しい名前"), "2026-12-20T00:00:00.000Z")).toBe(false);
+    expect(p.markSaved(id, data("新しい名前"), "2026-12-20T00:00:00.000Z")).toBe(true);
+  });
+});
+
+describe("指摘4: 複数のタブ", () => {
+  it("ほかのタブがすでに保存していれば、その鍵と id で保存する（POST し直さない）", async () => {
+    const storage = memoryStorage();
+    const tab1 = setup({ storage });
+    const tab2 = createPublishStore({ storage, api: createApi(tab1.server.fetchFn), random, clientId: "c".repeat(32) });
+    // タブ2 はまだ何も知らない状態で、タブ1 が保存する
+    expect(tab2.store.get().saved).toBeNull();
+    await tab1.p.save(data());
+    const key = readSaved(storage)!.editKey;
+    expect(await tab2.save(data("タブ2の線"))).toBe(true);
+    const last = tab1.server.calls[tab1.server.calls.length - 1];
+    expect(last.method).toBe("PUT");
+    expect(last.headers["X-Edit-Key"]).toBe(key);
+    expect(tab1.server.routes.size).toBe(1);
+  });
+
+  it("ほかのタブの保存・印刷の情報を、storage イベントで取り込む", async () => {
+    const storage = memoryStorage();
+    let fire: ((key: string | null) => void) | null = null;
+    const { p } = setup({ storage, subscribeExternal: (cb) => ((fire = cb), () => {}) });
+    const other = setup({ storage });
+    await other.p.requestPrint(data(), "CODE1");
+    other.p.stopPolling();
+    expect(p.store.get().saved).toBeNull();
+    fire!(STORAGE_KEYS.saved);
+    fire!(STORAGE_KEYS.print);
+    expect(p.store.get().saved?.id).toBe("ROUTE00000000001");
+    expect(p.store.get().print?.jobId).toBe(1);
+    p.stopPolling();
+  });
+});
+
+describe("指摘5: 保存中に内容を変えて印刷", () => {
+  it("進行中の保存が終わったあと、今の内容で保存し直してから申し込む", async () => {
+    const { server, p } = setup();
+    const a = data("前の線");
+    const b = data("あとの線");
+    const saving = p.save(a);
+    const printing = p.requestPrint(b, "CODE1");
+    expect(await saving).toBe(true);
+    expect(await printing).toBe(true);
+    const seq = server.calls.map((c) => `${c.method} ${c.path}`);
+    expect(seq).toEqual(["POST /api/routes", "PUT /api/routes/ROUTE00000000001", "POST /api/print"]);
+    expect((server.routes.get("ROUTE00000000001")!.data as RouteData).name).toBe("あとの線");
+    expect(p.printMatches(b)).toBe(true);
+    p.stopPolling();
+  });
+
+  it("保存の途中で別の内容の保存を頼まれたら、終わったあとにその内容で保存し直す", async () => {
+    const { server, p } = setup();
+    const first = p.save(data("一"));
+    const second = p.save(data("二"));
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    expect(p.isSaved(data("二"))).toBe(true);
+    expect(server.calls.map((c) => c.method)).toEqual(["POST", "PUT"]);
+  });
+});
+
+describe("指摘6: 結果が分からない申し込みのあとで内容を変えた", () => {
+  it("新しい requestId を作らず、同じ本文で確かめ直し、前の内容の印刷として記録する", async () => {
+    const { server, storage, p } = setup();
+    const a = data("前の線");
+    await p.save(a);
+    server.failOnce();
+    expect(await p.requestPrint(a, "CODE1")).toBe(false);
+    const pending = readPrint(storage)!;
+    expect(pending.jobId).toBeNull();
+    expect(pending.fingerprint).toBe(routeFingerprint(a));
+    // 内容を変えて、会場コードも違うもので押しても、前の申し込みを同じ本文で確かめ直す
+    const b = data("あとの線");
+    const n = server.calls.length;
+    expect(await p.requestPrint(b, "OTHER")).toBe(true);
+    const sent = server.calls.slice(n);
+    expect(sent.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /api/print"]);
+    expect(sent[0].body).toMatchObject({ requestId: pending.requestId, eventCode: "CODE1", routeId: pending.routeId });
+    expect(server.jobs.size).toBe(1);
+    // 記録は前の内容のもの。今の内容とは違うと分かる
+    expect(p.printMatches(a)).toBe(true);
+    expect(p.printMatches(b)).toBe(false);
+    p.stopPolling();
+  });
+});
+
+describe("指摘8: 期限切れ", () => {
+  it("期限切れなら内容が同じでも保存ずみにせず、保存すると新しい URL を作る", async () => {
+    let t = new Date("2026-11-20T00:00:00Z");
+    const { server, p } = setup({ now: () => t });
+    await p.save(data());
+    expect(p.saveStatus(data())).toBe("clean");
+    t = new Date("2026-12-21T00:00:00Z");
+    expect(p.isSaved(data())).toBe(false);
+    expect(p.saveStatus(data())).toBe("expired");
+    const oldKey = p.store.get().saved!.editKey;
+    expect(await p.save(data())).toBe(true);
+    const last = server.calls[server.calls.length - 1];
+    expect(last.method).toBe("POST");
+    expect(last.body!.editKey).not.toBe(oldKey);
+    expect(p.store.get().saved!.id).toBe("ROUTE00000000002");
+  });
+
+  it("印刷で expired が返ったら、保存ずみ扱いをやめる（次は保存し直してから申し込む）", async () => {
+    const { server, p } = setup();
+    await p.save(data());
+    server.override(() => server.json(410, { error: "expired" }));
+    expect(await p.requestPrint(data(), "CODE1")).toBe(false);
+    expect(p.store.get().printError?.code).toBe("expired");
+    expect(p.saveStatus(data())).toBe("expired");
+    expect(await p.requestPrint(data(), "CODE1")).toBe(true);
+    expect(server.calls.filter((c) => c.method === "POST" && c.path === "/api/routes")).toHaveLength(2);
+    p.stopPolling();
+  });
+});
+
+describe("指摘10: 発行番号と申し込んだ日", () => {
+  it("申し込みが通ったら、発行番号と申し込んだ日（日本時間）を記録する", async () => {
+    const { p } = setup({ now: () => new Date("2026-11-20T16:00:00Z") });
+    await p.requestPrint(data(), "CODE1");
+    expect(p.store.get().print).toMatchObject({ issueNo: 41, issuedOn: "2026.11.21" });
+    p.stopPolling();
   });
 });

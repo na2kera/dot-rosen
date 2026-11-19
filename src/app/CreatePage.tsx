@@ -6,7 +6,9 @@ import { LineStep } from "../steps/line/LineStep.tsx";
 import { FinishStep } from "../steps/finish/FinishStep.tsx";
 import { StationsStep } from "../steps/stations/StationsStep.tsx";
 import { TrainStep } from "../steps/train/TrainStep.tsx";
-import { browserStorage, randomBytes } from "../store/browser.ts";
+import { browserStorage, onExternalStorageChange, randomBytes } from "../store/browser.ts";
+import { STORAGE_KEYS } from "../store/kv-storage.ts";
+import { useStore } from "../store/use-store.ts";
 import { getOrCreateClientId } from "../store/device.ts";
 import { stationsRemaining } from "../store/route-ops.ts";
 import { createRouteStore } from "../store/route-store.ts";
@@ -77,6 +79,9 @@ function CreateApp({ data }: { data: AppData }) {
     return () => p.stopPolling();
   }, []);
 
+  // ほかのタブで作りかけが変わったら取り込む
+  useEffect(() => onExternalStorageChange((key) => (key === null || key === STORAGE_KEYS.draft) && ctx.route.syncFromStorage()), [ctx]);
+
   // ページを離れるときは待たずに保存する
   useEffect(() => {
     const flush = () => ctx.route.flush();
@@ -104,8 +109,29 @@ function boardSub(step: Step, remaining: number, symbol: string, cars: number): 
   return undefined;
 }
 
+/** 端末に保存できないことのお知らせは、開いている間に1回だけ */
+let storageWarned = false;
+const selectPersistFailed = (s: { persistFailed: boolean }) => s.persistFailed;
+
+function useStorageWarning(): void {
+  const { route, storage } = useApp();
+  const persistFailed = useStore(route.store, selectPersistFailed);
+  const mode = (storage as { mode?: string }).mode ?? "ok";
+  useEffect(() => {
+    if (storageWarned || (mode === "ok" && !persistFailed)) return;
+    storageWarned = true;
+    toast(
+      mode === "ok"
+        ? "この端末に保存できませんでした。空き容量を確かめてね（作りかけは このページを開いている間は残ります）"
+        : "この端末には保存できません（プライベートモードなど）。ページを読み込み直すと作りかけが消えます",
+      { tone: "alert", ms: 6000 },
+    );
+  }, [mode, persistFailed]);
+}
+
 function CreateLayout() {
   const { ui } = useApp();
+  useStorageWarning();
   const draft = useDraft();
   const { step } = useUi();
   const meta = STEPS[step - 1];

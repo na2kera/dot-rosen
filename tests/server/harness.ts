@@ -11,7 +11,7 @@ import { createApp } from "../../worker/app.ts";
 import { createResources } from "../../worker/lib/resources.ts";
 import { buildCardRaster } from "../../worker/lib/card.ts";
 import { RATE_RULES, type LimitKind } from "../../worker/lib/rate-limit.ts";
-import type { Bindings, Db, Deps, Resources } from "../../worker/lib/types.ts";
+import type { Bindings, Db, DbStatement, Deps, Resources } from "../../worker/lib/types.ts";
 
 const root = path.resolve(import.meta.dirname, "../..");
 
@@ -77,6 +77,7 @@ export async function startHarness() {
     await db.batch(TABLES.map((t) => db.prepare(`DROP TABLE IF EXISTS ${t}`)));
     await db.prepare("DELETE FROM sqlite_sequence").run().catch(() => {});
     await migrate();
+    spy.clear();
   }
 
   let nowMs = Date.parse("2026-11-20T03:00:00.000Z");
@@ -90,7 +91,9 @@ export async function startHarness() {
     },
   };
 
-  const env: Bindings = { DB: db, ...SECRETS };
+  // API が使う DB は、実行した文を記録し、特定の文の直前に割り込める包みを通す（競合の順番の再現と文数の確認用）
+  const spy = spyDb(db);
+  const env: Bindings = { DB: spy.db, ...SECRETS };
   const vars: Partial<Bindings> = {};
   // 路線カードの組み立てを差し替えられるようにする（失敗のテスト用）
   let cardBuilder: Deps["buildCard"] = undefined;
@@ -124,6 +127,10 @@ export async function startHarness() {
     setCardBuilder: (f: Deps["buildCard"]) => {
       cardBuilder = f;
     },
+    /** sql が re に合う文を API が実行する直前に、1回だけ fn を実行する（fn が投げればその文は失敗する） */
+    beforeQuery: spy.beforeQuery,
+    /** API が実行した文（batch の中の文も1文として数える） */
+    executed: spy.executed,
     dispose: () => proxy.dispose(),
   };
 }
@@ -228,4 +235,47 @@ export async function seedRateLimit(h: Harness, kind: LimitKind, ip: string, cou
     .prepare("INSERT INTO rate_limits (key, window_start, count) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET window_start = ?2, count = ?3")
     .bind(`${kind}:${ip}`, start, count)
     .run();
+}
+
+type SpyStatement = DbStatement & { readonly sql: string; readonly inner: DbStatement };
+
+/** 実行した文を記録し、特定の文の直前に割り込める Db の包み */
+function spyDb(db: Db) {
+  const hooks: { re: RegExp; fn: () => unknown }[] = [];
+  const executed: string[] = [];
+  async function fire(sql: string) {
+    executed.push(sql);
+    const i = hooks.findIndex((h) => h.re.test(sql));
+    if (i < 0) return;
+    const [h] = hooks.splice(i, 1);
+    await h.fn();
+  }
+  const wrap = (sql: string, inner: DbStatement): SpyStatement => ({
+    sql,
+    inner,
+    bind: (...v: unknown[]) => wrap(sql, inner.bind(...v)),
+    first: async <T,>() => (await fire(sql), inner.first<T>()),
+    all: async <T,>() => (await fire(sql), inner.all<T>()),
+    run: async () => (await fire(sql), inner.run()),
+  });
+  const wrapped: Db = {
+    prepare: (sql: string) => wrap(sql, db.prepare(sql)),
+    batch: async <T,>(stmts: DbStatement[]) => {
+      const list = stmts as SpyStatement[];
+      for (const st of list) await fire(st.sql);
+      return db.batch<T>(list.map((st) => st.inner));
+    },
+  };
+  return {
+    db: wrapped,
+    executed,
+    /** 割り込みと記録を消す（テストごと） */
+    clear: () => {
+      hooks.length = 0;
+      executed.length = 0;
+    },
+    beforeQuery: (re: RegExp, fn: () => unknown) => {
+      hooks.push({ re, fn });
+    },
+  };
 }

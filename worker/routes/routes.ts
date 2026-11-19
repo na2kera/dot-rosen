@@ -4,7 +4,7 @@ import { parseRouteData, type RouteData } from "../../shared/route/index.ts";
 import { addDays, expiryDays, iso } from "../lib/config.ts";
 import { newRouteId, safeEqual, sha256Hex } from "../lib/crypto.ts";
 import { ApiError, asRecord, clientIp, EDIT_KEY_RE, notFound, readJson, ROUTE_ID_RE, str } from "../lib/http.ts";
-import { hitLimit } from "../lib/rate-limit.ts";
+import { acquireAttempt } from "../lib/rate-limit.ts";
 import type { AppEnv, Db, Deps, Resources } from "../lib/types.ts";
 
 /** 路線データを検査する。通らなければ 400（8KB を超えるものは 413）。理由も返す */
@@ -56,7 +56,7 @@ export function routesApi(deps: Deps) {
   app.post("/routes", async (c) => {
     const db = c.env.DB;
     const now = deps.now();
-    await hitLimit(db, "create", clientIp(c), now);
+    await acquireAttempt(db, "create", clientIp(c), now);
     const body = asRecord(await readJson(c));
     const editKey = str(body.editKey, EDIT_KEY_RE);
     const data = checkRouteData(body.data, deps.resources);

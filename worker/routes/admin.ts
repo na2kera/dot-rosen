@@ -6,7 +6,7 @@ import { iso } from "../lib/config.ts";
 import { hmacHex, newEventCode, newToken, safeEqual } from "../lib/crypto.ts";
 import { ApiError, asRecord, CLIENT_TOKEN_RE, clientIp, conflict, invalid, jobIdParam, notFound, readJson, ROUTE_ID_RE } from "../lib/http.ts";
 import { sweepOrphansStatement, sweepTimeoutsStatement, type JobStatus } from "../lib/jobs.ts";
-import { checkFailures, recordFailure } from "../lib/rate-limit.ts";
+import { acquireAttempt, releaseAttempt } from "../lib/rate-limit.ts";
 import { ensureEventCode, readSettings } from "../lib/settings.ts";
 import type { AppEnv, Deps } from "../lib/types.ts";
 
@@ -76,13 +76,12 @@ export function adminApi(deps: Deps) {
     const now = deps.now();
     const ip = clientIp(c);
     const { password, sessionSecret } = secrets(c);
-    await checkFailures(db, "login", ip, now);
     const body = asRecord(await readJson(c));
     const given = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
-    if (!(await safeEqual(given, password))) {
-      await recordFailure(db, "login", ip, now);
-      throw new ApiError(401, "unauthorized");
-    }
+    // 照合の前に失敗の枠を1つ取り（上限なら 429 で照合しない）、成功したら戻す
+    await acquireAttempt(db, "login", ip, now);
+    if (!(await safeEqual(given, password))) throw new ApiError(401, "unauthorized");
+    await releaseAttempt(db, "login", ip, now);
     const exp = now.getTime() + SESSION_MS;
     setSessionCookie(c, await sessionValue(sessionSecret, exp), SESSION_MS / 1000);
     return c.json({ ok: true, expiresAt: iso(new Date(exp)) });
@@ -136,38 +135,51 @@ export function adminApi(deps: Deps) {
   app.post("/admin/jobs/:id/reprint", async (c) => {
     const db = c.env.DB;
     const now = deps.now();
+    const nowIso = iso(now);
     const id = jobIdParam(c.req.param("id"));
-    const src = await db
-      .prepare(
-        `SELECT j.status, j.issue_no, j.snapshot, j.route_id, r.hidden AS route_hidden, r.id AS route_exists
-         FROM print_jobs j LEFT JOIN routes r ON r.id = j.route_id WHERE j.id = ?1`,
-      )
-      .bind(id)
-      .first<{ status: JobStatus; issue_no: number; snapshot: string; route_id: string; route_hidden: number | null; route_exists: string | null }>();
-    if (!src) throw notFound();
-    // 終わった印刷（done・failed）だけ。路線が消えた・非公開のものは刷らない
-    if (src.status !== "done" && src.status !== "failed") throw conflict();
-    if (src.route_exists === null || src.route_hidden) throw conflict();
+    type Src = { status: JobStatus; issue_no: number; snapshot: string; route_hidden: number | null; route_expires: string | null; route_exists: string | null };
+    const load = () =>
+      db
+        .prepare(
+          `SELECT j.status, j.issue_no, j.snapshot, r.hidden AS route_hidden, r.expires_at AS route_expires, r.id AS route_exists
+           FROM print_jobs j LEFT JOIN routes r ON r.id = j.route_id WHERE j.id = ?1`,
+        )
+        .bind(id)
+        .first<Src>();
+    // 刷れない理由: 無い 404、終わっていない 409、路線が消えた・非公開 409、路線が期限切れ 410
+    const reason = (src: Src | null): ApiError | null => {
+      if (!src) return notFound();
+      if (src.status !== "done" && src.status !== "failed") return conflict();
+      if (src.route_exists === null || src.route_hidden) return conflict();
+      if (src.route_expires === null || src.route_expires <= nowIso) return new ApiError(410, "expired");
+      return null;
+    };
+    const src = await load();
+    const before = reason(src);
+    if (before) throw before;
     let card;
     try {
-      card = (deps.buildCard ?? buildCardRaster)(JSON.parse(src.snapshot) as CardSnapshot, src.issue_no, deps.resources);
+      card = (deps.buildCard ?? buildCardRaster)(JSON.parse(src!.snapshot) as CardSnapshot, src!.issue_no, deps.resources);
     } catch (e) {
       console.error("再印刷の組み立てに失敗", { jobId: id, message: e instanceof Error ? e.message : String(e) });
       throw new ApiError(500, "internal");
     }
-    // 元の snapshot と発行番号で、待ちの先頭（いまの先頭より小さい sort_key）に入れる
+    // 元の snapshot と発行番号で、待ちの先頭（いまの先頭より小さい sort_key）に入れる。
+    // 路線が存在し、非公開でなく、期限内であることを同じ文の中で確かめる（確かめたあとの非公開化・削除と競合しない）
     const row = await db
       .prepare(
         `INSERT INTO print_jobs (route_id, client_id, request_id, event_code, status, issue_no, sort_key, snapshot, raster, height, created_at, reprint_of)
-         SELECT route_id, client_id, ?1, event_code, 'queued', issue_no,
+         SELECT j.route_id, j.client_id, ?1, j.event_code, 'queued', j.issue_no,
            COALESCE((SELECT MIN(sort_key) FROM print_jobs WHERE status = 'queued'), 0) - 1,
-           snapshot, ?2, ?3, ?4, id
-         FROM print_jobs WHERE id = ?5
+           j.snapshot, ?2, ?3, ?4, j.id
+         FROM print_jobs j
+         WHERE j.id = ?5 AND j.status IN ('done', 'failed')
+           AND EXISTS (SELECT 1 FROM routes r WHERE r.id = j.route_id AND r.hidden = 0 AND r.expires_at > ?4)
          RETURNING id, issue_no`,
       )
-      .bind(`reprint-${newToken()}`, card.raster, card.height, iso(now), id)
+      .bind(`reprint-${newToken()}`, card.raster, card.height, nowIso, id)
       .first<{ id: number; issue_no: number }>();
-    if (!row) throw notFound();
+    if (!row) throw reason(await load()) ?? conflict();
     return c.json({ jobId: row.id, issueNo: row.issue_no });
   });
 
@@ -194,12 +206,13 @@ export function adminApi(deps: Deps) {
   });
 
   app.post("/admin/event-code/regenerate", async (c) => {
+    const db = c.env.DB;
     const eventCode = newEventCode();
-    await c.env.DB.prepare(
-      "INSERT INTO settings (key, value) VALUES ('event_code', ?1) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-    )
-      .bind(eventCode)
-      .run();
+    // 新しいコードにするのと、古いコードの上限の解除（print_grants）を消すのを1つの batch で
+    await db.batch([
+      db.prepare("INSERT INTO settings (key, value) VALUES ('event_code', ?1) ON CONFLICT (key) DO UPDATE SET value = excluded.value").bind(eventCode),
+      db.prepare("DELETE FROM print_grants WHERE event_code != ?1").bind(eventCode),
+    ]);
     return c.json({ eventCode });
   });
 

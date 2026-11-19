@@ -27,6 +27,18 @@ export function printerApi(deps: Deps) {
     const db = c.env.DB;
     const now = deps.now();
     const nowIso = iso(now);
+    // 待ちも印刷中も無いとき（問い合わせのほとんど）は軽く済ませる: 1文で有無と printer_last_seen を見て、
+    // 何も無ければ 204（printer_last_seen の更新が要るときだけもう1文）
+    const probe = await db
+      .prepare(
+        `SELECT EXISTS (SELECT 1 FROM print_jobs WHERE status IN ('queued', 'printing')) AS busy,
+           (SELECT value FROM settings WHERE key = 'printer_last_seen') AS seen`,
+      )
+      .first<{ busy: number; seen: string | null }>();
+    if (probe && !probe.busy) {
+      if (!probe.seen || probe.seen < iso(new Date(now.getTime() - 30 * 1000))) await touchPrinterStatement(db, now).run();
+      return c.body(null, 204);
+    }
     const results = await db.batch<{ id: number; height: number }>([
       sweepOrphansStatement(db, now),
       // すでに printing のもの（プリンタの再起動など）は、渡し直さずに「結果が分からない」失敗にする

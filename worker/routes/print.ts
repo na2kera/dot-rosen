@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { parseRouteData } from "../../shared/route/index.ts";
 import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
 import { APP_NAME, cardOptions, iso, jstDate, jstMonthDay } from "../lib/config.ts";
-import { safeEqual } from "../lib/crypto.ts";
+import { safeEqual, sha256Hex } from "../lib/crypto.ts";
 import {
   ApiError,
   asRecord,
@@ -19,26 +19,48 @@ import {
   str,
 } from "../lib/http.ts";
 import { jobProgress, MAX_QUEUED, sweepOrphansStatement } from "../lib/jobs.ts";
-import { checkFailures, recordFailure } from "../lib/rate-limit.ts";
+import { acquireAttempt, releaseAttempt } from "../lib/rate-limit.ts";
 import { readSettings } from "../lib/settings.ts";
 import type { AppEnv, Db, Deps } from "../lib/types.ts";
 import { checkOwner, loadRoute } from "./routes.ts";
 
-/** 会場コードを確かめる。違えば失敗を数えて 403 */
+/**
+ * 会場コードを確かめる。照合の前に失敗の枠を1つ取り（上限なら 429 で照合しない）、合っていれば戻す。
+ * 違えば枠はそのまま（失敗を1回数えたことになる）で 403。
+ */
 async function checkEventCode(db: Db, code: string, ip: string, now: Date): Promise<{ eventCode: string; accepting: boolean }> {
+  await acquireAttempt(db, "code", ip, now);
   const s = await readSettings(db);
-  if (s.eventCode === null || !(await safeEqual(code, s.eventCode))) {
-    await recordFailure(db, "code", ip, now);
-    throw new ApiError(403, "invalid_code");
-  }
+  if (s.eventCode === null || !(await safeEqual(code, s.eventCode))) throw new ApiError(403, "invalid_code");
+  await releaseAttempt(db, "code", ip, now);
   return { eventCode: s.eventCode, accepting: s.accepting };
 }
 
+type ExistingJob = { id: number; route_id: string; preparing: number; edit_key_hash: string | null };
+
+/** 同じ (clientId, requestId) の印刷と、その路線の鍵のハッシュ（路線が無ければ null） */
 async function existingJob(db: Db, clientId: string, requestId: string) {
   return db
-    .prepare("SELECT id, route_id FROM print_jobs WHERE client_id = ?1 AND request_id = ?2")
+    .prepare(
+      `SELECT j.id, j.route_id, (j.status = 'queued' AND j.raster IS NULL) AS preparing, r.edit_key_hash
+       FROM print_jobs j LEFT JOIN routes r ON r.id = j.route_id
+       WHERE j.client_id = ?1 AND j.request_id = ?2`,
+    )
     .bind(clientId, requestId)
-    .first<{ id: number; route_id: string }>();
+    .first<ExistingJob>();
+}
+
+/**
+ * 再送への応答。路線 ID が違えば 409、路線が無く鍵を確かめられなければ 404、鍵が違えば 403。
+ * 路線が非公開・期限切れでも、鍵が合えば元の印刷の状態を返す（受付停止中でも返す）。
+ * 画像がまだ入っていない（準備中の）印刷には成功を返さず、409 と Retry-After: 2。
+ */
+async function replayResponse(db: Db, prev: ExistingJob, routeId: string, editKey: string) {
+  if (prev.route_id !== routeId) throw conflict();
+  if (prev.edit_key_hash === null) throw notFound();
+  if (!(await safeEqual(await sha256Hex(editKey), prev.edit_key_hash))) throw new ApiError(403, "forbidden");
+  if (prev.preparing) throw new ApiError(409, "conflict", { "Retry-After": "2" });
+  return progressResponse(db, prev.id);
 }
 
 async function progressResponse(db: Db, jobId: number) {
@@ -49,7 +71,7 @@ async function progressResponse(db: Db, jobId: number) {
 
 /**
  * 発行番号の採番、条件の確認、待ちへの追加を1つの batch で行う。
- * 1. 条件（受付中・会場コード・待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、
+ * 1. 条件（受付中・会場コード・路線が存在し非公開でなく期限内・待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、
  *    sort_key = NULL（この batch で作った印）で追加する。発行番号は issue_counter + 1。
  * 2. 1 で追加した行（sort_key IS NULL）があるときだけ issue_counter を 1 増やす。
  * 3. その行の sort_key を id にして返す。
@@ -62,6 +84,7 @@ function enqueueStatements(db: Db, p: { routeId: string; clientId: string; reque
          SELECT ?1, ?2, ?3, ?4, 'queued', CAST(s.value AS INTEGER) + 1, NULL, ?5, ?6
          FROM settings s
          WHERE s.key = 'issue_counter'
+           AND EXISTS (SELECT 1 FROM routes WHERE id = ?1 AND hidden = 0 AND expires_at > ?6)
            AND (SELECT value FROM settings WHERE key = 'accepting') = '1'
            AND (SELECT value FROM settings WHERE key = 'event_code') = ?4
            AND (SELECT COUNT(*) FROM print_jobs WHERE status = 'queued') < ?7
@@ -85,10 +108,14 @@ function enqueueStatements(db: Db, p: { routeId: string; clientId: string; reque
 }
 
 /** 追加できなかった理由を、確かめる順に調べる */
-async function rejectReason(db: Db, clientId: string, eventCode: string): Promise<ApiError> {
+async function rejectReason(db: Db, clientId: string, eventCode: string, routeId: string, now: Date): Promise<ApiError> {
   const s = await readSettings(db);
   if (s.eventCode !== eventCode) return new ApiError(403, "invalid_code");
   if (!s.accepting) return new ApiError(409, "not_accepting");
+  // 路線を確かめたあとに、非公開化・削除・期限切れになった
+  const route = await loadRoute(db, routeId);
+  if (!route || route.hidden) return notFound();
+  if (route.expires_at <= iso(now)) return new ApiError(410, "expired");
   const row = await db
     .prepare(
       `SELECT
@@ -111,11 +138,12 @@ export function printApi(deps: Deps) {
     const db = c.env.DB;
     const now = deps.now();
     const ip = clientIp(c);
-    await checkFailures(db, "code", ip, now);
     const code = c.req.query("code") ?? "";
+    // 照合の前に失敗の枠を1つ取り、合っていれば戻す（並行でも上限を超えて照合しない）
+    await acquireAttempt(db, "code", ip, now);
     const s = await readSettings(db);
     const valid = EVENT_CODE_RE.test(code) && s.eventCode !== null && (await safeEqual(code, s.eventCode));
-    if (!valid) await recordFailure(db, "code", ip, now);
+    if (valid) await releaseAttempt(db, "code", ip, now);
     return c.json({ valid, accepting: s.accepting });
   });
 
@@ -131,15 +159,11 @@ export function printApi(deps: Deps) {
     const requestId = str(body.requestId, CLIENT_TOKEN_RE);
 
     // 回数制限 → 会場コード
-    await checkFailures(db, "code", ip, now);
     const { eventCode, accepting } = await checkEventCode(db, code, ip, now);
 
-    // 同じ (clientId, requestId) の再送なら元の印刷を返す
+    // 同じ (clientId, requestId) の再送なら、鍵を確かめてから元の印刷を返す
     const prev = await existingJob(db, clientId, requestId);
-    if (prev) {
-      if (prev.route_id !== routeId) throw conflict();
-      return c.json(await progressResponse(db, prev.id));
-    }
+    if (prev) return c.json(await replayResponse(db, prev, routeId, editKey));
 
     // 受付中か → 路線（期限内・非公開でない・鍵が合う）
     if (!accepting) throw new ApiError(409, "not_accepting");
@@ -167,19 +191,20 @@ export function printApi(deps: Deps) {
     if (!created) {
       // 同時に届いた同じ申し込みに先を越された
       const again = await existingJob(db, clientId, requestId);
-      if (again) {
-        if (again.route_id !== routeId) throw conflict();
-        return c.json(await progressResponse(db, again.id));
-      }
-      throw await rejectReason(db, clientId, eventCode);
+      if (again) return c.json(await replayResponse(db, again, routeId, editKey));
+      throw await rejectReason(db, clientId, eventCode, routeId, now);
     }
 
-    // 発行番号が決まったので画像を組み立てる。失敗したら印刷を消し、回数を消費しない
-    let card;
+    // 発行番号が決まったので画像を組み立てて保存する。どちらかが失敗したら印刷を消し、回数を消費しない
     try {
-      card = (deps.buildCard ?? buildCardRaster)(snapshot, created.issue_no, deps.resources);
+      const card = (deps.buildCard ?? buildCardRaster)(snapshot, created.issue_no, deps.resources);
+      // 取り消された（路線の非公開化など）場合は何も書かない
+      await db
+        .prepare("UPDATE print_jobs SET raster = ?1, height = ?2 WHERE id = ?3 AND raster IS NULL AND status = 'queued'")
+        .bind(card.raster, card.height, created.id)
+        .run();
     } catch (e) {
-      console.error("路線カードの組み立てに失敗", { jobId: created.id, routeId, message: e instanceof Error ? e.message : String(e) });
+      console.error("路線カードの組み立てか保存に失敗", { jobId: created.id, routeId, message: e instanceof Error ? e.message : String(e) });
       await db.batch([
         db.prepare("DELETE FROM print_jobs WHERE id = ?1 AND raster IS NULL").bind(created.id),
         // 後から別の番号が出ていなければ、番号を戻す
@@ -189,10 +214,6 @@ export function printApi(deps: Deps) {
       ]);
       throw new ApiError(500, "internal");
     }
-    await db
-      .prepare("UPDATE print_jobs SET raster = ?1, height = ?2 WHERE id = ?3 AND raster IS NULL AND status = 'queued'")
-      .bind(card.raster, card.height, created.id)
-      .run();
     return c.json(await progressResponse(db, created.id));
   });
 

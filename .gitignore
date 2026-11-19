@@ -9,3 +9,5 @@ dist/
 firmware/.pio/
 firmware/include/secrets.h
 *.local
+data-src/
+tools/out/

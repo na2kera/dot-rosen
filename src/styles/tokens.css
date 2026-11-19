@@ -1,0 +1,57 @@
+/*
+ * 色と寸法の決まり。ここを直せば画面全体が変わる。
+ * - 角丸・グラデーション・ぼかし・半透明は使わない（見出しの発光だけ例外）。
+ * - 文字の大きさは 16px と 32px だけ（行の高さは 24px / 40px）。
+ */
+:root {
+  /* 色 */
+  --c-bg: #f3ead7;
+  --c-panel: #fffdf6;
+  --c-ink: #202931;
+  --c-weak: #b9ae96;
+  --c-alert: #d9453d;
+  --c-on-ink: #fffdf6;
+  /* 補足の文字（弱い線の色は文字には薄すぎるため、少し濃くしたもの） */
+  --c-ink-weak: #6b6250;
+
+  /* 見出し（発車案内板） */
+  --c-board: #14161c;
+  --c-board-led-off: #1f232b;
+  --c-board-ink: #ff9d2e;
+  --c-board-sub: #7dfc8a;
+
+  /* 地図（src/map/engine.ts が読む。#rrggbb で書く） */
+  --map-sea: #9fc6dd;
+  --map-wave: #c4dfec;
+  --map-land: #f6efdc;
+  --map-rail: #a9a59b;
+  --map-river: #6fa6cf;
+  --map-station: #4a5560;
+  --map-station-in: #fffdf6;
+  --map-label-bg: #fffdf6;
+  /* 地図データの範囲の外 */
+  --map-out: #e2d8c1;
+  --map-out-dot: #c6b99c;
+
+  /* 文字 */
+  --font: "DotGothic16", monospace;
+  --fs: 16px;
+  --lh: 24px;
+  --fs-l: 32px;
+  --lh-l: 40px;
+
+  /* 寸法 */
+  --line: 2px;
+  --shadow: 4px;
+  --press: 2px;
+  --tap: 44px;
+  --gap: 8px;
+  --pad: 16px;
+  --board-h: 48px;
+  --nav-h: 56px;
+  --col-w: 480px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* 動き（ドット絵らしく、なめらかにしすぎない） */
+  --steps: steps(4, end);
+}

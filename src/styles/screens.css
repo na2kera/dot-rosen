@@ -1,0 +1,302 @@
+/* 各画面のレイアウト */
+
+/* ---- 地図 ---- */
+.stations {
+  position: absolute;
+  inset: 0;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--map-sea);
+}
+
+.map__canvas {
+  display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 地図の上の操作部品（地図への操作は通す） */
+.map-tools {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-tools > * {
+  pointer-events: auto;
+}
+
+.map-tools--top {
+  top: 8px;
+  align-items: flex-start;
+}
+
+.map-tools--bottom {
+  bottom: calc(8px + var(--shadow));
+  justify-content: flex-start;
+}
+
+.map-tools__spacer {
+  flex: 1;
+  pointer-events: none;
+}
+
+.map-tools .btn {
+  padding: 8px 10px;
+}
+
+.map-tools .btn--icon {
+  padding: 8px;
+}
+
+/* 「◯◯の次に追加する駅をタップ」 */
+.map-banner {
+  position: absolute;
+  left: 8px;
+  right: calc(8px + var(--shadow));
+  top: calc(8px + var(--tap) + var(--shadow) + 8px);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-board);
+  color: var(--c-board-ink);
+  box-shadow: var(--shadow) var(--shadow) 0 var(--c-ink);
+}
+
+.map-banner p {
+  flex: 1;
+}
+
+.map-banner__em {
+  color: var(--c-board-sub);
+}
+
+.map-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% - var(--shadow));
+  padding: 12px;
+}
+
+.map-hint p {
+  flex: 1;
+}
+
+.focus-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - var(--shadow));
+  padding: 8px 8px 8px 12px;
+}
+
+.focus-card__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.focus-card__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-card__actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+/* ---- 駅の一覧 ---- */
+.list-legend {
+  margin-bottom: 8px;
+}
+
+.stlist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stlist__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 4px 0;
+  border-bottom: var(--line) solid var(--c-bg);
+}
+
+.stlist__row:last-child {
+  border-bottom: 0;
+}
+
+.stlist__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stlist__ops .btn {
+  box-shadow: none;
+  padding: 8px;
+}
+
+.stlist__loop {
+  padding-left: 56px;
+  color: var(--c-ink-weak);
+}
+
+.stlist--readonly .stlist__row {
+  min-height: 40px;
+}
+
+/* ---- 検索 ---- */
+.search {
+  display: grid;
+  gap: 12px;
+}
+
+.search__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: var(--line) solid var(--c-ink);
+}
+
+.search__item {
+  display: grid;
+  width: 100%;
+  min-height: 56px;
+  padding: 4px 8px;
+  border: 0;
+  border-bottom: var(--line) solid var(--c-bg);
+  background: var(--c-panel);
+  text-align: left;
+  cursor: pointer;
+}
+
+.search__item:active {
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+.search__item:active .search__detail {
+  color: var(--c-on-ink);
+}
+
+.search__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 出典とつかいかた ---- */
+.info {
+  display: grid;
+  gap: 8px;
+}
+
+.info__head {
+  margin-top: 8px;
+  padding: 0 8px;
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+  justify-self: start;
+}
+
+.info__list {
+  margin: 0;
+  padding-left: 24px;
+  overflow-wrap: anywhere;
+}
+
+.info a {
+  color: inherit;
+}
+
+/* ---- 路線をきめる ---- */
+.line-step .panel {
+  margin-right: var(--shadow);
+}
+
+.line-step__color-name {
+  margin-top: 8px;
+}
+
+.field__input--symbol {
+  width: 96px;
+  text-transform: uppercase;
+  letter-spacing: 4px;
+}
+
+/* 駅名標のみほん */
+.sign {
+  margin: 0;
+  border: var(--line) solid var(--c-ink);
+  background: #fff;
+}
+
+.sign__main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px 12px;
+}
+
+.sign__num {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border: 6px solid;
+  background: #fff;
+  color: var(--c-ink);
+}
+
+.sign__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign__band {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+  border-top: var(--line) solid var(--c-ink);
+}
+
+.sign__line {
+  padding: 8px 12px 0;
+  color: var(--c-ink-weak);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sign__next {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

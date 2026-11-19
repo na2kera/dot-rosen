@@ -1,0 +1,113 @@
+/* 文字・地・画面全体の骨組み */
+@font-face {
+  font-family: "DotGothic16";
+  src: url("/fonts/DotGothic16-Regular.woff2") format("woff2");
+  font-display: block;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font);
+  font-size: var(--fs);
+  line-height: var(--lh);
+  color: var(--c-ink);
+  background: var(--c-bg);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  /* 列の外（PC の左右）は点の模様 */
+  background-color: var(--c-weak);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' shape-rendering='crispEdges'%3E%3Crect width='2' height='2' fill='%23a89d84'/%3E%3C/svg%3E");
+  overscroll-behavior: none;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+  font-size: var(--fs);
+  font-weight: normal;
+  line-height: var(--lh);
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+:focus-visible {
+  outline: var(--line) dashed var(--c-ink);
+  outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pix {
+  image-rendering: pixelated;
+}
+
+/* 画面の列（スマホは全幅、PC は中央に 480px） */
+.app {
+  position: relative;
+  display: grid;
+  grid-template-rows: var(--board-h) minmax(0, 1fr) auto;
+  width: 100%;
+  max-width: var(--col-w);
+  height: 100dvh;
+  margin: 0 auto;
+  background: var(--c-bg);
+  overflow: hidden;
+}
+
+@media (min-width: 481px) {
+  .app {
+    border-left: var(--line) solid var(--c-ink);
+    border-right: var(--line) solid var(--c-ink);
+  }
+}
+
+.app__main {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app__scroll {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--pad) var(--pad) calc(var(--pad) * 2);
+}
+
+.text-l {
+  font-size: var(--fs-l);
+  line-height: var(--lh-l);
+}
+
+.text-weak {
+  color: var(--c-ink-weak);
+}
+
+.text-alert {
+  color: var(--c-alert);
+}

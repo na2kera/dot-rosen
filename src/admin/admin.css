@@ -422,3 +422,28 @@
   top: auto;
   bottom: calc(var(--nav-h) + var(--safe-b) + 12px);
 }
+
+/* 印刷の一覧: その印刷で使った見た目（文字の大きさは16ドットの倍数だけなので、薄い色で控えめに） */
+.adm-item__look {
+  color: var(--c-ink-weak);
+}
+
+/* 再印刷のダイアログ: 見た目の選択 */
+.adm-look {
+  display: grid;
+  gap: var(--gap);
+  margin-top: var(--gap);
+  text-align: left;
+}
+
+.adm-look__group {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.adm-look__group legend {
+  padding: 0;
+  font-weight: normal;
+}

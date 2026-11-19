@@ -103,3 +103,19 @@ describe("QR コード", () => {
     expect(minX).toBe(QUIET);
   });
 });
+
+describe("印刷の見た目の名前", () => {
+  it("6 通りすべてに分かる名前が付く", async () => {
+    const { CARD_MONO_SETS, CARD_SIDE_LAYOUTS } = await import("../shared/card/index.ts");
+    const { lookText, MONO_SET_LABELS, SIDE_LAYOUT_LABELS } = await import("../src/admin/format.ts");
+    expect(MONO_SET_LABELS).toEqual({ bold: "こい（bold）", light: "うすい（light）" });
+    expect(SIDE_LAYOUT_LABELS).toEqual({
+      "two-x1": "2両を横に（等倍）",
+      "lead-x2": "先頭車を大きく（2倍）",
+      "two-x2-rotated": "2両をたてに（2倍・紙の長さ方向）",
+    });
+    const texts = new Set(CARD_MONO_SETS.flatMap((monoSet) => CARD_SIDE_LAYOUTS.map((sideLayout) => lookText({ monoSet, sideLayout }))));
+    expect(texts.size).toBe(6);
+    expect(lookText({ monoSet: "bold", sideLayout: "two-x1" })).toBe("こい（bold）・2両を横に（等倍）");
+  });
+});

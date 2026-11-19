@@ -5,7 +5,7 @@ import { parseRouteData, type RouteData } from "../../shared/route/index.ts";
 import { errorMessage, type ApiFailure } from "../api/client.ts";
 import { CardView } from "../card/CardView.tsx";
 import { ImageSaver } from "../card/ImageSaver.tsx";
-import { useBitmapFont, useCard } from "../card/useCard.ts";
+import { useBitmapFont, useCard, useServerCardLook } from "../card/useCard.ts";
 import { buildStationIndex, type StationIndex } from "../data/station-index.ts";
 import { navigate } from "../router.ts";
 import { browserStorage } from "../store/browser.ts";
@@ -19,7 +19,7 @@ import { confirmDialog, DialogHost } from "../ui/Dialog.tsx";
 import { Loading } from "../ui/Loading.tsx";
 import { Panel } from "../ui/Panel.tsx";
 import { toast, ToastHost } from "../ui/Toast.tsx";
-import { getApi, getPublish, setInitialStep } from "./services.ts";
+import { getApi, getConfig, getPublish, setInitialStep } from "./services.ts";
 
 let indexPromise: Promise<StationIndex> | null = null;
 
@@ -47,7 +47,8 @@ export function RoutePage({ id }: { id: string }) {
   useEffect(() => {
     let alive = true;
     setState({ kind: "loading" });
-    Promise.all([loadIndex(), getApi().getRoute(id)]).then(
+    // サーバーの設定（印刷プレビューの見た目）も同時に取る。失敗しても既定値で進む（reject しない）
+    Promise.all([loadIndex(), getApi().getRoute(id), getConfig().load()]).then(
       ([index, r]) => {
         if (!alive) return;
         if (!r.ok) return setState({ kind: "error", fail: r });
@@ -124,7 +125,8 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
   const pub = useStore(publish.store);
   const owner = pub.saved?.id === id;
   const { font, error: fontError, retry } = useBitmapFont();
-  const card = useCard(v.data, v.index.lookup, font, { routeId: id, expiresAt: v.expiresAt });
+  const look = useServerCardLook();
+  const card = useCard(v.data, v.index.lookup, font, { routeId: id, expiresAt: v.expiresAt, look });
   const [busy, setBusy] = useState(false);
   const day = localMonthDay(v.expiresAt);
 

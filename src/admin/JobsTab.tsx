@@ -3,7 +3,9 @@ import { Button } from "../ui/Button.tsx";
 import { confirmDialog } from "../ui/Dialog.tsx";
 import type { AdminApi, AdminJob } from "./api.ts";
 import type { RunAction } from "./AdminConsole.tsx";
-import { formatTime, issueText, jobActions, jobView, routePath } from "./format.ts";
+import type { CardLook } from "../../shared/card/index.ts";
+import { formatTime, issueText, jobActions, jobView, lookText, routePath } from "./format.ts";
+import { ReprintLookPicker } from "./ReprintLookPicker.tsx";
 
 type Props = {
   jobs: AdminJob[];
@@ -45,6 +47,7 @@ function JobRow({ job, api, isBusy, action }: { job: AdminJob } & Omit<Props, "j
       <a className="adm-item__name" href={routePath(job.routeId)} target="_blank" rel="noopener noreferrer">
         {name}
       </a>
+      <p className="adm-item__look">{lookText(job)}</p>
       {view.note && <p className="adm-item__note">{view.note}</p>}
       <div className="adm-item__actions">
         {acts.cancel && (
@@ -68,9 +71,20 @@ function JobRow({ job, api, isBusy, action }: { job: AdminJob } & Omit<Props, "j
             disabled={rowBusy}
             onClick={() =>
               action(k("reprint"), "reprint", async () => {
-                if (!(await confirmDialog(<>{label} を もう一度 印刷しますか？<br />待ちの先頭に入ります。</>, { ok: "再印刷する" }))) return null;
-                await api.reprint(job.id);
-                return `${issueText(job.issueNo)} を待ちの先頭に入れました`;
+                // 見た目は元の印刷と同じものを初期値にし、選び直したらその再印刷だけ変える（刷り比べ用）
+                const original: CardLook = { monoSet: job.monoSet, sideLayout: job.sideLayout };
+                let chosen = original;
+                const message = (
+                  <>
+                    {label} を もう一度 印刷しますか？
+                    <br />
+                    待ちの先頭に入ります。
+                    <ReprintLookPicker initial={original} onChange={(l) => (chosen = l)} idPrefix={`reprint-${job.id}`} />
+                  </>
+                );
+                if (!(await confirmDialog(message, { ok: "再印刷する" }))) return null;
+                const r = await api.reprint(job.id, chosen);
+                return `${issueText(job.issueNo)} を待ちの先頭に入れました（${lookText(r.card ?? chosen)}）`;
               })
             }
           >

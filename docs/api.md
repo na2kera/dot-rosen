@@ -91,13 +91,19 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 | メソッドとパス | 内容 |
 |---|---|
 | `GET /api/health` | `{ ok: true }` |
+| `GET /api/config` | 今のサーバーの設定値 `{ card: { monoSet, sideLayout }, expiryDays }`。認証なし |
 | `POST /api/routes` | 本文 `{ data, editKey }` → `{ id, expiresAt }` |
 | `GET /api/routes/:id` | `{ id, data, expiresAt }`。無い・非公開は 404、期限切れは 410 |
 | `PUT /api/routes/:id` | ヘッダ `X-Edit-Key`、本文 `{ data }` → `{ ok: true, expiresAt }` |
 | `DELETE /api/routes/:id` | ヘッダ `X-Edit-Key` → `{ ok: true }`。待ちの印刷も取り消す |
 | `GET /api/event?code=...` | `{ valid, accepting }` |
-| `POST /api/print` | 本文 `{ routeId, editKey, eventCode, clientId, requestId }` → `{ jobId, issueNo, ahead, status }` |
+| `POST /api/print` | 本文 `{ routeId, editKey, eventCode, clientId, requestId }` → `{ jobId, issueNo, ahead, status, card: { monoSet, sideLayout } }` |
 | `GET /api/print/:jobId?clientId=...` | `{ status, ahead, issueNo }`。`clientId` が違えば 404 |
+
+### サーバーの設定値（`GET /api/config`）
+
+- 応答: `{ "card": { "monoSet": "light" | "bold", "sideLayout": "two-x1" | "lead-x2" | "two-x2-rotated" }, "expiryDays": number }`。値は `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`・`EXPIRY_DAYS`（不正なら既定の bold・two-x1・30）。`Cache-Control: no-store`。
+- 画面は起動時（データの読み込みと同じとき）に取り、印刷プレビュー（ステップ3の模様、ステップ4と路線ページの路線カード）をこの見た目で描く。カラー版は側面の置き方だけ合わせる。取れなければ既定の bold・two-x1 で描く（エラーにはしない）。
 
 ### 路線の保存
 
@@ -113,7 +119,8 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 - **`requestId` は画面が押すたびに作るランダムな文字列。** 同じ `(clientId, requestId)` の申し込みがもう一度来たら、新しく作らずに元の印刷を返す。
 - 発行番号の採番、回数上限の判定、待ちへの追加は、D1 の `batch`（1つのトランザクション）と条件つきの文で行い、同時に来ても番号の重複や上限の超過が起きないようにする。
 - 印刷用の画像は、申し込みの時点でサーバーが保存済みの路線データから組み立てる。画面は先に路線を保存してから申し込む。
-- `snapshot` に、そのとき使った路線データ、発行日（日本時間の「2026.11.20」）、期限の日付、URL を保存する。再印刷はこの `snapshot` から組み立て直すので、同じ発行番号で同じ内容になる。
+- `snapshot` に、そのとき使った路線データ、発行日（日本時間の「2026.11.20」）、期限の日付、URL、印刷の見た目（`monoSet`・`sideLayout`。そのときの `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`）を保存する。再印刷はこの `snapshot` から組み立て直すので、同じ発行番号で同じ内容になる。あとから設定を変えても、過去の印刷の再印刷（見た目の指定なし）は変わらない。
+- 応答の `card` は、その印刷で使う見た目（`snapshot` の値）。同じ `requestId` の再送にも同じものを返す。画面は申し込んだあとの印刷プレビューをこの見た目で描く。
 - 画像の組み立てに失敗したら、印刷を作らず 500 を返す（回数を消費しない）。
 - `ahead` は、自分より前にある `queued` と `printing` の件数。
 - 画像の準備が終わっていない印刷に対する同じ `requestId` の再送には、409 `conflict` と `Retry-After: 2` を返す。画面は少し待って同じ `requestId` で送り直す。
@@ -162,14 +169,23 @@ ATOM Lite はメモリが小さく、プリンタへの転送も遅いので、�
 |---|---|
 | `POST /api/admin/login` | 本文 `{ password }` |
 | `POST /api/admin/logout` | Cookie を消す |
-| `GET /api/admin/state` | `{ accepting, eventCode, printer: { lastSeenAt }, jobs: [...], counts }`。`jobs` は新しい順に 100 件、路線名・`clientId`・状態・発行番号つき。画像は含めない |
+| `GET /api/admin/state` | `{ accepting, eventCode, printer: { lastSeenAt }, jobs: [...], counts }`。`jobs` は新しい順に 100 件、路線名・`clientId`・状態・発行番号・使った見た目（`monoSet`・`sideLayout`）つき。画像は含めない |
 | `POST /api/admin/jobs/:id/cancel` | `queued` のものだけ取り消す。それ以外は 409 |
-| `POST /api/admin/jobs/:id/reprint` | 元の `snapshot` と発行番号で、新しい印刷を待ちの先頭に入れる。回数上限には数えない |
+| `POST /api/admin/jobs/:id/reprint` | 元の `snapshot` と発行番号で、新しい印刷を待ちの先頭に入れる。回数上限には数えない。本文は任意 `{ monoSet?, sideLayout? }`（下記）→ `{ jobId, issueNo, card: { monoSet, sideLayout } }` |
 | `POST /api/admin/clients/:clientId/grant` | そのクライアントの、今の会場コードでの回数上限を 1 増やす |
 | `POST /api/admin/accepting` | 本文 `{ accepting: boolean }` |
 | `POST /api/admin/event-code/regenerate` | 新しい会場コードを発行し、古いものを無効にする |
 | `GET /api/admin/routes` | 新しい順に 100 件（路線名、作成日時、非公開かどうか） |
 | `POST /api/admin/routes/:id/hide` | 本文 `{ hidden: boolean }`。非公開にするのと、その路線の待ちの印刷を取り消すのを、1つの `batch` で行う |
+
+### 再印刷の見た目の指定（刷り比べ用）
+
+- 本文 `{ "monoSet"?: "light" | "bold", "sideLayout"?: "two-x1" | "lead-x2" | "two-x2-rotated" }`。本文なし・`{}` も受け付ける。
+- 指定した項目は、その再印刷だけその見た目で画像を組み立てる。指定しない項目は元の印刷の `snapshot` の見た目（元の記録に見た目が無い古いものは、今のサーバーの設定）。
+- 不正な値（未知の文字列、文字列でない、`null`）や、オブジェクトでない本文は 400（印刷は作らない）。
+- 新しい印刷の `snapshot` には、実際に使った見た目を入れる（その再印刷をさらに指定なしで再印刷すると、同じ見た目になる）。
+- 発行番号・待ちの先頭に入ること・回数上限に数えないこと・刷れない条件（期限切れ・非公開など）は、指定の有無で変わらない。
+- `/api/admin/state` の `jobs` の見た目は `snapshot` から読む。見た目の無い古い記録は、今の設定（指定なしの再印刷で使う見た目）で埋めて返す。
 
 ## 7. 秘密の設定値（Worker）
 

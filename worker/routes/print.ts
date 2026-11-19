@@ -1,5 +1,6 @@
 // 会場コードの確認と印刷の申し込み（docs/api.md「4. 公開 API」「印刷の申し込み」）。
 import { Hono } from "hono";
+import { toCardLook, type CardLook } from "../../shared/card/index.ts";
 import { parseRouteData } from "../../shared/route/index.ts";
 import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
 import { APP_NAME, cardOptions, iso, jstDate, jstMonthDay } from "../lib/config.ts";
@@ -55,18 +56,26 @@ async function existingJob(db: Db, clientId: string, requestId: string) {
  * 路線が非公開・期限切れでも、鍵が合えば元の印刷の状態を返す（受付停止中でも返す）。
  * 画像がまだ入っていない（準備中の）印刷には成功を返さず、409 と Retry-After: 2。
  */
-async function replayResponse(db: Db, prev: ExistingJob, routeId: string, editKey: string) {
+async function replayResponse(db: Db, prev: ExistingJob, routeId: string, editKey: string, fallback: CardLook) {
   if (prev.route_id !== routeId) throw conflict();
   if (prev.edit_key_hash === null) throw notFound();
   if (!(await safeEqual(await sha256Hex(editKey), prev.edit_key_hash))) throw new ApiError(403, "forbidden");
   if (prev.preparing) throw new ApiError(409, "conflict", { "Retry-After": "2" });
-  return progressResponse(db, prev.id);
+  return progressResponse(db, prev.id, fallback);
 }
 
-async function progressResponse(db: Db, jobId: number) {
+/**
+ * 申し込みへの応答。card は、その印刷で使った見た目（snapshot から。見た目の無い古い記録は fallback = 今の設定）。
+ * 画面は申し込んだあとのプレビューをこの見た目で描く
+ */
+async function progressResponse(db: Db, jobId: number, fallback: CardLook) {
   const p = await jobProgress(db, jobId);
   if (!p) throw new Error("印刷が見つかりません");
-  return { jobId, issueNo: p.issueNo, ahead: p.ahead, status: p.status };
+  const look = await db
+    .prepare("SELECT json_extract(snapshot, '$.monoSet') AS monoSet, json_extract(snapshot, '$.sideLayout') AS sideLayout FROM print_jobs WHERE id = ?1")
+    .bind(jobId)
+    .first<{ monoSet: unknown; sideLayout: unknown }>();
+  return { jobId, issueNo: p.issueNo, ahead: p.ahead, status: p.status, card: toCardLook(look, fallback) };
 }
 
 /**
@@ -163,7 +172,7 @@ export function printApi(deps: Deps) {
 
     // 同じ (clientId, requestId) の再送なら、鍵を確かめてから元の印刷を返す
     const prev = await existingJob(db, clientId, requestId);
-    if (prev) return c.json(await replayResponse(db, prev, routeId, editKey));
+    if (prev) return c.json(await replayResponse(db, prev, routeId, editKey, cardOptions(c.env)));
 
     // 受付中か → 路線（期限内・非公開でない・鍵が合う）
     if (!accepting) throw new ApiError(409, "not_accepting");
@@ -191,7 +200,7 @@ export function printApi(deps: Deps) {
     if (!created) {
       // 同時に届いた同じ申し込みに先を越された
       const again = await existingJob(db, clientId, requestId);
-      if (again) return c.json(await replayResponse(db, again, routeId, editKey));
+      if (again) return c.json(await replayResponse(db, again, routeId, editKey, opts));
       throw await rejectReason(db, clientId, eventCode, routeId, now);
     }
 
@@ -214,7 +223,7 @@ export function printApi(deps: Deps) {
       ]);
       throw new ApiError(500, "internal");
     }
-    return c.json(await progressResponse(db, created.id));
+    return c.json(await progressResponse(db, created.id, opts));
   });
 
   app.get("/print/:jobId", async (c) => {

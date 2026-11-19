@@ -1,5 +1,6 @@
 // サーバーへの保存と印刷の申し込み（docs/api.md「路線の保存」「印刷の申し込み」）。
 // 端末に残す情報（編集の鍵、id、jobId など）もここで読み書きする。DOM にも React にも依存しない。
+import { toCardLook, type CardLook } from "../../shared/card/index.ts";
 import type { RouteData } from "../../shared/route/index.ts";
 import type { Api, ApiFailure, PrintStatus } from "../api/client.ts";
 import { createStore } from "./create-store.ts";
@@ -31,6 +32,8 @@ export type PrintRecord = {
   readonly editKey: string;
   /** 申し込んだ日（日本時間の「2026.11.20」） */
   readonly issuedOn: string | null;
+  /** 申し込んだときの印刷の見た目（申し込みの応答、無ければ申し込んだときのサーバーの設定）。古い記録は null */
+  readonly card: CardLook | null;
   /** この申し込みの前の記録（断られたときに戻す。1つだけ持つ） */
   readonly prev: PrintRecord | null;
 };
@@ -123,6 +126,7 @@ function parsePrint(r: Record<string, unknown>, depth: number): PrintRecord | nu
     eventCode: isStr(r.eventCode) ? r.eventCode : "",
     editKey: isStr(r.editKey) ? r.editKey : "",
     issuedOn: isStr(r.issuedOn) ? r.issuedOn : null,
+    card: isRecord(r.card) ? toCardLook(r.card) : null,
     prev: depth === 0 && isRecord(r.prev) ? parsePrint(r.prev, 1) : null,
   };
 }
@@ -139,6 +143,8 @@ export type PublishDeps = {
   clientId: string;
   /** 画面が裏に回っているか（裏の間は問い合わせない） */
   isHidden?: () => boolean;
+  /** 今のサーバーの設定の見た目（申し込んだときの見た目として覚える）。無ければ記録しない */
+  cardLook?: () => CardLook;
   /** 今の時刻（期限切れの判定、申し込んだ日） */
   now?: () => Date;
   /** ほかのタブで保存先が変わったときに呼ばれる口 */
@@ -369,7 +375,9 @@ export function createPublishStore(deps: PublishDeps) {
   /** 送った結果を記録する。断られたら前の記録に戻す。結果が分からなければそのまま残す */
   function settle(rec: PrintRecord, r: Awaited<ReturnType<typeof send>>): boolean {
     if (r.ok) {
-      writePrint({ ...rec, jobId: r.value.jobId, issueNo: r.value.issueNo, status: r.value.status, ahead: r.value.ahead });
+      // 応答の見た目（その印刷で実際に使うもの）を優先し、無ければ申し込んだときに覚えた設定のまま
+      const card = r.value.card !== undefined && isRecord(r.value.card) ? toCardLook(r.value.card, rec.card ?? undefined) : rec.card;
+      writePrint({ ...rec, jobId: r.value.jobId, issueNo: r.value.issueNo, status: r.value.status, ahead: r.value.ahead, card });
       stopPolling();
       if (!isTerminal(r.value.status)) {
         polling = true;
@@ -425,6 +433,7 @@ export function createPublishStore(deps: PublishDeps) {
         eventCode,
         editKey: saved.editKey,
         issuedOn: jstDate(now()),
+        card: deps.cardLook ? deps.cardLook() : null,
         prev: prev && prev.jobId !== null ? { ...prev, prev: null } : null,
       };
       writePrint(rec);

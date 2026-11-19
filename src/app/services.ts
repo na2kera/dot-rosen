@@ -3,14 +3,22 @@ import { createApi, type Api } from "../api/client.ts";
 import { browserStorage, onExternalStorageChange, randomBytes } from "../store/browser.ts";
 import { getOrCreateClientId } from "../store/device.ts";
 import { createPublishStore, type PublishStore } from "../store/publish-store.ts";
+import { createConfigLoader, type ConfigLoader } from "../store/server-config.ts";
 import type { Step } from "../store/ui-store.ts";
 
 let api: Api | null = null;
 let publish: PublishStore | null = null;
+let config: ConfigLoader | null = null;
 
 export function getApi(): Api {
   api ??= createApi((input, init) => fetch(input, init));
   return api;
+}
+
+/** サーバーの設定値（印刷の見た目など）。データの読み込みと同じタイミングで load() する */
+export function getConfig(): ConfigLoader {
+  config ??= createConfigLoader(getApi());
+  return config;
 }
 
 export function getPublish(): PublishStore {
@@ -21,6 +29,8 @@ export function getPublish(): PublishStore {
       api: getApi(),
       random: randomBytes,
       clientId: getOrCreateClientId(storage, randomBytes),
+      // 申し込んだときの見た目を覚える（応答に見た目が無いときに使う）
+      cardLook: () => getConfig().store.get().card,
       isHidden: () => document.hidden,
       // ほかのタブで保存・印刷したら取り込む
       subscribeExternal: onExternalStorageChange,

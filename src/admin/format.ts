@@ -1,4 +1,5 @@
 // 管理画面の表示用の小さな処理。DOM にも React にも依存しない。
+import type { CardLook } from "../../shared/card/index.ts";
 import { AdminApiError, type AdminJob, type JobStatus } from "./api.ts";
 
 /** 状態の問い合わせの間隔 */
@@ -81,6 +82,26 @@ export function formatTime(isoText: string | null): string {
   if (!Number.isFinite(t)) return "—";
   const parts = Object.fromEntries(timeFmt.formatToParts(t).map((p) => [p.type, p.value]));
   return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+/** 印刷の模様の名前（再印刷のダイアログと一覧） */
+export const MONO_SET_LABELS: Record<CardLook["monoSet"], string> = {
+  bold: "こい（bold）",
+  light: "うすい（light）",
+};
+
+/** 側面の置き方の名前 */
+export const SIDE_LAYOUT_LABELS: Record<CardLook["sideLayout"], string> = {
+  "two-x1": "2両を横に（等倍）",
+  "lead-x2": "先頭車を大きく（2倍）",
+  "two-x2-rotated": "2両をたてに（2倍・紙の長さ方向）",
+};
+
+/** 一覧の行に小さく出す、使った見た目（「こい（bold）・2両を横に（等倍）」） */
+export function lookText(look: Pick<AdminJob, "monoSet" | "sideLayout">): string {
+  const m = MONO_SET_LABELS[look.monoSet] ?? String(look.monoSet);
+  const s = SIDE_LAYOUT_LABELS[look.sideLayout] ?? String(look.sideLayout);
+  return `${m}・${s}`;
 }
 
 /** 発行番号（No.0042） */

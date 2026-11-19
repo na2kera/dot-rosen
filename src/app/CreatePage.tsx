@@ -19,7 +19,7 @@ import { Loading } from "../ui/Loading.tsx";
 import { STEPS, StepNav } from "../ui/StepNav.tsx";
 import { toast, ToastHost } from "../ui/Toast.tsx";
 import { AppContext, useApp, useDraft, useUi, type AppContextValue } from "./AppContext.tsx";
-import { getPublish, takeInitialStep } from "./services.ts";
+import { getConfig, getPublish, takeInitialStep } from "./services.ts";
 
 /** 一度読んだデータは画面を移っても使い回す */
 let dataPromise: Promise<AppData> | null = null;
@@ -33,7 +33,8 @@ export function CreatePage() {
     setError(null);
     setProgress(0);
     dataPromise ??= loadAppData(setProgress);
-    dataPromise.then(setData, () => {
+    // サーバーの設定（印刷プレビューの見た目）も同時に取る。失敗しても既定値で進む（reject しない）
+    Promise.all([dataPromise, getConfig().load()]).then(([d]) => setData(d), () => {
       dataPromise = null;
       setError("よみこめませんでした。電波のよい所で もういちど ためしてね");
     });

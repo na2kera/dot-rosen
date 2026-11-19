@@ -10,6 +10,16 @@ import { paintColor, paintPrint } from "./render.ts";
 export { CARD_MAX_HEIGHT, CARD_WIDTH, formatIssueNo, layoutCard, type CardLayout, type CardSideLayout, type Op } from "./layout.ts";
 export { CARD_BASE, CARD_INK, CARD_PALETTE, CARD_PAPER, CARD_SUB } from "./palette.ts";
 export { qrMatrix, type QrMatrix } from "./qr.ts";
+export {
+  CARD_MONO_SETS,
+  CARD_SIDE_LAYOUTS,
+  DEFAULT_CARD_LOOK,
+  isCardMonoSet,
+  isCardSideLayout,
+  toCardLook,
+  type CardLook,
+  type CardMonoSet,
+} from "./look.ts";
 
 export type CardInput = {
   /** 検査済みの路線データ */

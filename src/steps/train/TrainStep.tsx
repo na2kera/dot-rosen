@@ -27,6 +27,7 @@ import {
 } from "../../../shared/train/index.ts";
 import { COLOR_LABELS } from "../../../shared/train/colors.ts";
 import { useApp, useDraft } from "../../app/AppContext.tsx";
+import { useServerCardLook } from "../../card/useCard.ts";
 import { Button } from "../../ui/Button.tsx";
 import { ColorPicker } from "../../ui/ColorPicker.tsx";
 import { PixelCanvas } from "../../ui/PixelCanvas.tsx";
@@ -146,10 +147,12 @@ export function TrainStep() {
 
 function TrainPreview({ train, mono, rolling, children }: { train: TrainDesign; mono: boolean; rolling: number; children: React.ReactNode }) {
   const consistScale = useConsistScale();
+  // 印刷プレビューの模様は、サーバーの設定（実際の印刷）に合わせる
+  const { monoSet } = useServerCardLook();
   const face = useMemo(() => renderFace(train), [train]);
   const consist = useMemo(() => renderConsist(train), [train]);
-  const faceSrc = useMemo(() => (mono ? { image: toMono(face, 2) } : { image: face, palette: TRAIN_PALETTE }), [face, mono]);
-  const consistSrc = useMemo(() => (mono ? { image: toMono(consist, 1) } : { image: consist, palette: TRAIN_PALETTE }), [consist, mono]);
+  const faceSrc = useMemo(() => (mono ? { image: toMono(face, 2, monoSet) } : { image: face, palette: TRAIN_PALETTE }), [face, mono, monoSet]);
+  const consistSrc = useMemo(() => (mono ? { image: toMono(consist, 1, monoSet) } : { image: consist, palette: TRAIN_PALETTE }), [consist, mono, monoSet]);
 
   return (
     <div className="train__preview" data-mono={mono}>

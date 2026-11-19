@@ -42,10 +42,10 @@ export function errorResponse(c: Context<AppEnv>, err: ApiError): Response {
 }
 
 /**
- * 本文を JSON として読む。Content-Type が JSON でなければ 400、16KB を超えたら 413。
+ * 本文を JSON として読む（optional なら、本文が無い・空のときは {}）。Content-Type が JSON でなければ 400、16KB を超えたら 413。
  * 大きさは解析の前に確かめる（Content-Length を見たうえで、実際に読んだバイト数でも確かめる）。
  */
-export async function readJson(c: Context<AppEnv>): Promise<unknown> {
+export async function readJson(c: Context<AppEnv>, opts: { optional?: boolean } = {}): Promise<unknown> {
   const type = c.req.header("Content-Type") ?? "";
   if (!/^application\/json\s*(;|$)/i.test(type)) throw invalid();
   const len = c.req.header("Content-Length");
@@ -54,7 +54,10 @@ export async function readJson(c: Context<AppEnv>): Promise<unknown> {
     if (Number(len) > MAX_BODY_BYTES) throw new ApiError(413, "too_large");
   }
   const body = c.req.raw.body;
-  if (!body) throw invalid();
+  if (!body) {
+    if (opts.optional) return {};
+    throw invalid();
+  }
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -80,6 +83,8 @@ export async function readJson(c: Context<AppEnv>): Promise<unknown> {
   } catch {
     throw invalid();
   }
+  // 本文が任意の API は、空の本文を {} とみなす
+  if (opts.optional && text.trim() === "") return {};
   try {
     return JSON.parse(text);
   } catch {

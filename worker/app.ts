@@ -1,5 +1,6 @@
 // API の本体。駅データ・フォント・時計を外から受け取るので、Node 上のテストからも同じものを動かせる。
 import { Hono } from "hono";
+import { cardOptions, expiryDays } from "./lib/config.ts";
 import { ApiError, errorResponse } from "./lib/http.ts";
 import type { AppEnv, Deps } from "./lib/types.ts";
 import { adminApi } from "./routes/admin.ts";
@@ -17,6 +18,8 @@ export function createApp(deps: Deps) {
   });
 
   app.get("/health", (c) => c.json({ ok: true }));
+  // 今のサーバーの設定値（画面の印刷プレビューを、実際の印刷と同じ見た目で描くため）。認証なし
+  app.get("/config", (c) => c.json({ card: cardOptions(c.env), expiryDays: expiryDays(c.env) }));
   app.route("/", routesApi(deps));
   app.route("/", printApi(deps));
   app.route("/", printerApi(deps));

@@ -7,7 +7,8 @@ import { useApp, useDraft } from "../../app/AppContext.tsx";
 import { getApi, getPublish } from "../../app/services.ts";
 import { CardView } from "../../card/CardView.tsx";
 import { ImageSaver } from "../../card/ImageSaver.tsx";
-import { routeUrl, useBitmapFont, useCard } from "../../card/useCard.ts";
+import { previewLook } from "../../card/card-input.ts";
+import { routeUrl, useBitmapFont, useCard, useServerCardLook } from "../../card/useCard.ts";
 import { localMonthDay } from "../../store/dates.ts";
 import { getEventCode } from "../../store/device.ts";
 import { isTerminal, type PublishState } from "../../store/publish-store.ts";
@@ -36,11 +37,15 @@ export function FinishStep() {
   const rec = pub.print;
   const printed = rec !== null && rec.jobId !== null && rec.status !== "canceled" && rec.status !== "failed";
   const printedSame = printed && publish.printMatches(routeData);
+  // 申し込んだ内容は申し込んだときの見た目で、それ以外は今のサーバーの設定で描く
+  const serverLook = useServerCardLook();
+  const look = previewLook(printedSame ? rec!.card : null, serverLook);
   const card = useCard(routeData, data.index.lookup, font, {
     routeId: clean ? saved!.id : null,
     expiresAt: clean ? saved!.expiresAt : null,
     issueNo: printedSame ? rec!.issueNo : null,
     issuedOn: printedSame ? rec!.issuedOn : null,
+    look,
   });
 
   return (

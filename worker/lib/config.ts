@@ -1,4 +1,5 @@
 // 設定値の読み取りと、日付の書式。
+import { toCardLook, type CardLook, type CardMonoSet, type CardSideLayout } from "../../shared/card/index.ts";
 import type { Bindings } from "./types.ts";
 
 export const APP_NAME = "ドット路線メーカー";
@@ -31,19 +32,12 @@ export function jstDate(d: Date): string {
   return `${j.getUTCFullYear()}.${mm}.${dd}`;
 }
 
-export type MonoSet = "light" | "bold";
-export type SideLayout = "two-x1" | "lead-x2" | "two-x2-rotated";
-const MONO_SETS: readonly string[] = ["light", "bold"];
-const SIDE_LAYOUTS: readonly string[] = ["two-x1", "lead-x2", "two-x2-rotated"];
+export type MonoSet = CardMonoSet;
+export type SideLayout = CardSideLayout;
 
 /** 路線カードの模様セットと側面の置き方（CARD_MONO_SET・CARD_SIDE_LAYOUT。既定 bold・two-x1） */
-export function cardOptions(env: Bindings): { monoSet: MonoSet; sideLayout: SideLayout } {
-  const m = String(env.CARD_MONO_SET ?? "");
-  const s = String(env.CARD_SIDE_LAYOUT ?? "");
-  return {
-    monoSet: (MONO_SETS.includes(m) ? m : "bold") as MonoSet,
-    sideLayout: (SIDE_LAYOUTS.includes(s) ? s : "two-x1") as SideLayout,
-  };
+export function cardOptions(env: Bindings): CardLook {
+  return toCardLook({ monoSet: env.CARD_MONO_SET, sideLayout: env.CARD_SIDE_LAYOUT });
 }
 
 /** 日本時間の月日「12月20日」（路線カードの期限の印字。shared/card の CardInput.expiresOn の書式） */

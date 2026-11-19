@@ -81,3 +81,16 @@ describe("失敗", () => {
     await expect(api.state()).rejects.toMatchObject({ code: "bad_response" });
   });
 });
+
+describe("再印刷の見た目", () => {
+  it("見た目を省くと {}（元と同じ）、指定するとその値を本文に入れる", async () => {
+    const { api, calls } = fake(() => json({ jobId: 2, issueNo: 1, card: { monoSet: "light", sideLayout: "lead-x2" } }));
+    await api.reprint(1);
+    const r = await api.reprint(1, { monoSet: "light", sideLayout: "lead-x2" });
+    expect(calls.map((c) => [c.url, c.init?.body])).toEqual([
+      ["/api/admin/jobs/1/reprint", "{}"],
+      ["/api/admin/jobs/1/reprint", '{"monoSet":"light","sideLayout":"lead-x2"}'],
+    ]);
+    expect(r.card).toEqual({ monoSet: "light", sideLayout: "lead-x2" });
+  });
+});

@@ -1,4 +1,5 @@
 // 管理 API の呼び出し（docs/api.md「6. 管理 API」）。DOM に依存しない（fetch は差し替えられる）。
+import type { CardLook } from "../../shared/card/index.ts";
 
 export type JobStatus = "queued" | "printing" | "done" | "failed" | "canceled";
 
@@ -16,6 +17,9 @@ export type AdminJob = {
   error: string | null;
   /** 再印刷なら元の印刷の ID */
   reprintOf: number | null;
+  /** その印刷で使った見た目（記録に無い古いものは、サーバーが今の設定で埋める） */
+  monoSet: CardLook["monoSet"];
+  sideLayout: CardLook["sideLayout"];
 };
 
 export type AdminState = {
@@ -91,7 +95,9 @@ export function createAdminApi(fetcher: Fetcher = (i, init) => fetch(i, init)) {
     logout: () => post<{ ok: true }>("/logout"),
     state: () => call<AdminState>("GET", "/state"),
     cancel: (jobId: number) => post<{ ok: true }>(`/jobs/${jobId}/cancel`),
-    reprint: (jobId: number) => post<{ jobId: number; issueNo: number }>(`/jobs/${jobId}/reprint`),
+    /** look を省くと元の印刷と同じ見た目。指定した項目だけ、その再印刷の見た目を変える（刷り比べ用） */
+    reprint: (jobId: number, look: Partial<CardLook> = {}) =>
+      post<{ jobId: number; issueNo: number; card: CardLook }>(`/jobs/${jobId}/reprint`, look),
     grant: (clientId: string) => post<{ ok: true; extra: number }>(`/clients/${encodeURIComponent(clientId)}/grant`),
     setAccepting: (accepting: boolean) => post<{ ok: true; accepting: boolean }>("/accepting", { accepting }),
     regenerateEventCode: () => post<{ eventCode: string }>("/event-code/regenerate"),

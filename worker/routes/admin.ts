@@ -2,7 +2,8 @@
 import { Hono, type Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
-import { iso } from "../lib/config.ts";
+import { isCardMonoSet, isCardSideLayout, toCardLook, type CardLook } from "../../shared/card/index.ts";
+import { cardOptions, iso } from "../lib/config.ts";
 import { hmacHex, newEventCode, newToken, safeEqual } from "../lib/crypto.ts";
 import { ApiError, asRecord, CLIENT_TOKEN_RE, clientIp, conflict, invalid, jobIdParam, notFound, readJson, ROUTE_ID_RE } from "../lib/http.ts";
 import { sweepOrphansStatement, sweepTimeoutsStatement, type JobStatus } from "../lib/jobs.ts";
@@ -52,6 +53,23 @@ const sameOriginJson = createMiddleware<AppEnv>(async (c, next) => {
   }
   await next();
 });
+
+/**
+ * 再印刷の本文 { monoSet?, sideLayout? }。書かれた項目だけを返す。不正な値は 400
+ * （刷り比べのため、その再印刷だけ見た目を変える）
+ */
+function reprintLook(body: Record<string, unknown>): Partial<CardLook> {
+  const out: Partial<CardLook> = {};
+  if (body.monoSet !== undefined) {
+    if (!isCardMonoSet(body.monoSet)) throw invalid();
+    out.monoSet = body.monoSet;
+  }
+  if (body.sideLayout !== undefined) {
+    if (!isCardSideLayout(body.sideLayout)) throw invalid();
+    out.sideLayout = body.sideLayout;
+  }
+  return out;
+}
 
 export function adminApi(deps: Deps) {
   const app = new Hono<AppEnv>();
@@ -103,19 +121,22 @@ export function adminApi(deps: Deps) {
         .prepare(
           `SELECT id, route_id AS routeId, json_extract(snapshot, '$.route.name') AS routeName, client_id AS clientId,
              status, issue_no AS issueNo, created_at AS createdAt, claimed_at AS claimedAt, finished_at AS finishedAt,
-             error, reprint_of AS reprintOf
+             error, reprint_of AS reprintOf,
+             json_extract(snapshot, '$.monoSet') AS monoSet, json_extract(snapshot, '$.sideLayout') AS sideLayout
            FROM print_jobs ORDER BY id DESC LIMIT 100`,
         )
         .all(),
       db.prepare("SELECT status, COUNT(*) AS n FROM print_jobs GROUP BY status").all<{ status: JobStatus; n: number }>(),
     ]);
+    const fallbackLook = cardOptions(c.env);
     const countMap: Record<JobStatus, number> = { queued: 0, printing: 0, done: 0, failed: 0, canceled: 0 };
     for (const r of counts.results) countMap[r.status] = r.n;
     return c.json({
       accepting: s.accepting,
       eventCode,
       printer: { lastSeenAt: s.printerLastSeen },
-      jobs: jobs.results,
+      // 見た目の無い古い記録は、今の設定（指定なしの再印刷で使う見た目）で埋める
+      jobs: jobs.results.map((j) => ({ ...j, ...toCardLook(j, fallbackLook) })),
       counts: countMap,
     });
   });
@@ -137,6 +158,7 @@ export function adminApi(deps: Deps) {
     const now = deps.now();
     const nowIso = iso(now);
     const id = jobIdParam(c.req.param("id"));
+    const override = reprintLook(asRecord(await readJson(c, { optional: true })));
     type Src = { status: JobStatus; issue_no: number; snapshot: string; route_hidden: number | null; route_expires: string | null; route_exists: string | null };
     const load = () =>
       db
@@ -157,30 +179,35 @@ export function adminApi(deps: Deps) {
     const src = await load();
     const before = reason(src);
     if (before) throw before;
+    // 見た目: 指定があればそれ、無ければ元の印刷と同じ（元の記録に無ければ今の設定）。
+    // 新しい印刷の snapshot には使った見た目を必ず入れる（この再印刷をさらに再印刷しても同じ見た目になる）
     let card;
+    let snapshot: CardSnapshot;
     try {
-      card = (deps.buildCard ?? buildCardRaster)(JSON.parse(src!.snapshot) as CardSnapshot, src!.issue_no, deps.resources);
+      const orig = JSON.parse(src!.snapshot) as CardSnapshot;
+      snapshot = { ...orig, ...toCardLook(orig, cardOptions(c.env)), ...override };
+      card = (deps.buildCard ?? buildCardRaster)(snapshot, src!.issue_no, deps.resources);
     } catch (e) {
       console.error("再印刷の組み立てに失敗", { jobId: id, message: e instanceof Error ? e.message : String(e) });
       throw new ApiError(500, "internal");
     }
-    // 元の snapshot と発行番号で、待ちの先頭（いまの先頭より小さい sort_key）に入れる。
+    // 元の路線データ・日付・URL と発行番号（見た目だけ上で決めたもの）で、待ちの先頭（いまの先頭より小さい sort_key）に入れる。
     // 路線が存在し、非公開でなく、期限内であることを同じ文の中で確かめる（確かめたあとの非公開化・削除と競合しない）
     const row = await db
       .prepare(
         `INSERT INTO print_jobs (route_id, client_id, request_id, event_code, status, issue_no, sort_key, snapshot, raster, height, created_at, reprint_of)
          SELECT j.route_id, j.client_id, ?1, j.event_code, 'queued', j.issue_no,
            COALESCE((SELECT MIN(sort_key) FROM print_jobs WHERE status = 'queued'), 0) - 1,
-           j.snapshot, ?2, ?3, ?4, j.id
+           ?6, ?2, ?3, ?4, j.id
          FROM print_jobs j
          WHERE j.id = ?5 AND j.status IN ('done', 'failed')
            AND EXISTS (SELECT 1 FROM routes r WHERE r.id = j.route_id AND r.hidden = 0 AND r.expires_at > ?4)
          RETURNING id, issue_no`,
       )
-      .bind(`reprint-${newToken()}`, card.raster, card.height, nowIso, id)
+      .bind(`reprint-${newToken()}`, card.raster, card.height, nowIso, id, JSON.stringify(snapshot))
       .first<{ id: number; issue_no: number }>();
     if (!row) throw reason(await load()) ?? conflict();
-    return c.json({ jobId: row.id, issueNo: row.issue_no });
+    return c.json({ jobId: row.id, issueNo: row.issue_no, card: { monoSet: snapshot.monoSet, sideLayout: snapshot.sideLayout } });
   });
 
   app.post("/admin/clients/:clientId/grant", async (c) => {

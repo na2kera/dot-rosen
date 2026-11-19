@@ -36,7 +36,7 @@ describe("印刷の申し込み", () => {
     const res = await apply(h, r, { clientId });
     expect(res.status).toBe(200);
     const body = await json<PrintRes>(res);
-    expect(body).toEqual({ jobId: expect.any(Number), issueNo: 1, ahead: 0, status: "queued" });
+    expect(body).toEqual({ jobId: expect.any(Number), issueNo: 1, ahead: 0, status: "queued", card: { monoSet: "bold", sideLayout: "two-x1" } });
     const st = await h.call("GET", `/api/print/${body.jobId}?clientId=${clientId}`);
     expect(await json(st)).toEqual({ status: "queued", ahead: 0, issueNo: 1 });
     // clientId が違えば 404

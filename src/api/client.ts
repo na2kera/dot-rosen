@@ -108,8 +108,11 @@ export function createApi(fetchFn: FetchLike, base = "") {
     deleteRoute: (id: string, editKey: string) => call<{ ok: true }>("DELETE", `/api/routes/${enc(id)}`, { headers: { "X-Edit-Key": editKey } }),
     checkEvent: (code: string) => call<{ valid: boolean; accepting: boolean }>("GET", `/api/event?code=${enc(code)}`),
     requestPrint: (p: { routeId: string; editKey: string; eventCode: string; clientId: string; requestId: string }) =>
-      call<PrintProgress & { jobId: number }>("POST", "/api/print", { body: p }),
+      // card は、その印刷で使う見た目（古いサーバーは返さないので任意）
+      call<PrintProgress & { jobId: number; card?: unknown }>("POST", "/api/print", { body: p }),
     printStatus: (jobId: number, clientId: string) => call<PrintProgress>("GET", `/api/print/${jobId}?clientId=${enc(clientId)}`),
+    /** 今のサーバーの設定値（中身の検査は src/store/server-config.ts） */
+    getConfig: () => call<unknown>("GET", "/api/config"),
   };
 }
 

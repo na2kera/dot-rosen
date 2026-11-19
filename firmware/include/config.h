@@ -2,15 +2,20 @@
 #pragma once
 
 // ===== サーバーへの問い合わせ（docs/api.md「5. プリンタ用 API」） =====
-#define POLL_INTERVAL_MS 3000          // POST /api/printer/claim の間隔
+// 1: 自動で claim する（既定）。0: しない。USB の CLAIM ON / CLAIM OFF でも切り替えられる
+// （電源を切るとここの値に戻る）。未送信の完了報告は claim の入・切に関係なく送り直す
+#define AUTO_CLAIM 1
+#define POLL_INTERVAL_MS 3000          // POST /api/printer/claim の間隔。完了報告の送り直しもこの間隔
 #define HTTP_CONNECT_TIMEOUT_MS 10000
 #define HTTP_TIMEOUT_MS 15000          // 応答の待ち時間・本文の読み取りの待ち時間
+#define TLS_HANDSHAKE_TIMEOUT_S 10     // TLS ハンドシェイクの待ち時間（秒）
 #define FETCH_ROWS 96                  // 1 回の rows 取得の行数 = 1 回の GS v 0 の行数（1〜240）
 #define FETCH_RETRIES 3                // 帯の取得の失敗時に、やり直す回数（初回を除く）
 #define FETCH_RETRY_DELAY_MS 1500      // やり直しの間隔（回数ぶん伸ばす）
-#define MAX_JOB_HEIGHT 4000            // これを超える高さの印刷は受け付けない
-#define DONE_RETRIES 5                 // done が届かないときに送り直す回数（初回を除く）
-#define DONE_RETRY_DELAY_MS 2000       // 送り直しの間隔（2 倍ずつ伸ばす）
+#define FETCH_TOTAL_TIMEOUT_MS 90000   // 1 つの帯の取得（やり直しを含む）にかけてよい時間の上限
+#define MAX_JOB_HEIGHT 3200            // これを超える高さの印刷は受け付けない（claim の検査）
+#define CLAIM_BODY_MAX 256             // claim の応答本文の上限（バイト）
+#define DONE_BODY_MAX 512              // done の応答本文を読み切る上限（超えたら接続を閉じる）
 
 // ===== HTTPS =====
 // 1: ルート証明書（include/root_ca.h）で検証する（既定）
@@ -48,7 +53,8 @@
 #define PRINTER_USE_CTS 0
 // 受信できないときの G19 の電圧（HIGH / LOW）。未確認。STATUS で G19 の値が見える
 #define PRINTER_CTS_BUSY_LEVEL HIGH
-#define PRINTER_CTS_TIMEOUT_MS 10000   // これ以上受信できない状態が続いたら失敗
+// これ以上受信できない状態が続いたら、その帯で印刷を失敗として打ち切る（error: printer_busy）
+#define PRINTER_CTS_TIMEOUT_MS 10000
 #define PRINTER_CHUNK_BYTES 48         // 1 回に送るバイト数（CTS を確かめる単位）
 // 帯の中で、1 回（PRINTER_CHUNK_BYTES）送るごとに入れる待ち時間。0 なら待たない（既定）。
 // 115200bps で帯の途中の印字が乱れるときに増やす（例: 2500 = 1 行ごとに約 2.5ms）
@@ -85,4 +91,5 @@
 // ===== USB シリアル =====
 #define USB_BAUD 115200
 #define USB_READ_TIMEOUT_MS 15000      // PRINT で 1 帯ぶんのデータを待つ時間
+#define USB_RESYNC_QUIET_MS 1000       // PRINT の失敗後、入力がこの時間途切れるまで読み捨てる
 #define USB_LINE_MAX 64

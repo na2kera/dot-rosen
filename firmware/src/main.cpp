@@ -71,11 +71,35 @@ static void cmdStatus() {
   } else {
     Serial.printf("WIFI disconnected status=%d\n", static_cast<int>(WiFi.status()));
   }
-  Serial.printf("SERVER %s http=%d url=%s tls=%s\n", server::healthName(server::health()),
-                server::lastHttpCode(), SERVER_URL, TLS_VERIFY ? "verify" : "insecure");
-  Serial.printf("PRINTER baud=%lu cts_g19=%d use_cts=%d\n",
+  Serial.printf("SERVER %s http=%d url=%s tls=%s auto_claim=%s\n",
+                server::healthName(server::health()), server::lastHttpCode(), SERVER_URL,
+                TLS_VERIFY ? "verify" : "insecure", server::autoClaim() ? "on" : "off");
+  Serial.printf("NTP %s\n", server::timeSynced() ? "synced" : "not_synced");
+  Serial.printf("JOB id=%lu rows_sent=%lu height=%lu printing=%d\n",
+                static_cast<unsigned long>(server::jobId()),
+                static_cast<unsigned long>(printer::rowsSent()),
+                static_cast<unsigned long>(server::jobHeight()), server::printing() ? 1 : 0);
+  {
+    uint32_t job = 0, attempts = 0;
+    bool ok = false;
+    String err;
+    if (server::pendingDone(job, ok, err, attempts))
+      Serial.printf("PENDING_DONE job=%lu ok=%d error=%s attempts=%lu\n",
+                    static_cast<unsigned long>(job), ok ? 1 : 0, err.length() ? err.c_str() : "-",
+                    static_cast<unsigned long>(attempts));
+    else
+      Serial.println("PENDING_DONE none");
+  }
+  Serial.printf("PRINTER baud=%lu cts_g19=%d use_cts=%d cts_busy_level=%d sync_after_band=%d\n",
                 static_cast<unsigned long>(printer::baud()), printer::ctsLevel(),
-                PRINTER_USE_CTS);
+                PRINTER_USE_CTS, PRINTER_CTS_BUSY_LEVEL, PRINTER_SYNC_AFTER_BAND);
+  Serial.printf("CTS_LAST_PRINT busy_count=%lu busy_ms=%lu\n",
+                static_cast<unsigned long>(printer::ctsBusyCount()),
+                static_cast<unsigned long>(printer::ctsBusyMs()));
+  Serial.printf("HEAP free=%lu max_block=%lu\n", static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned long>(ESP.getMaxAllocHeap()));
+  Serial.printf("RESET reason=%d uptime_s=%lu\n", static_cast<int>(esp_reset_reason()),
+                static_cast<unsigned long>(millis() / 1000));
   Serial.printf("LAST_ERROR %s\n", app::lastError().c_str());
 }
 
@@ -121,7 +145,7 @@ static void handleLine(const char* line) {
     case CmdType::Status: cmdStatus(); return;
     case CmdType::Help:
       Serial.println("COMMANDS STATUS | TEST 1 | TEST 2 | BAUD 9600 | BAUD 115200 | "
-                     "BAUD LOCAL <rate> | BAUD ? | PAPER | PRINT <height>");
+                     "BAUD LOCAL <rate> | BAUD ? | PAPER | PRINT <height> | CLAIM ON | CLAIM OFF");
       return;
     case CmdType::Test: runPattern(c.arg == 1 ? Pattern::Test1 : Pattern::Test2); return;
     case CmdType::Baud:
@@ -156,16 +180,24 @@ static void handleLine(const char* line) {
       } else {
         app::setLastError(String("usb_print_") + err);
         led::showFailure();
-        // 送られてくる途中だった残りのデータを捨てる
-        const uint32_t start = millis();
-        while (millis() - start < 300) {
-          while (Serial.available()) Serial.read();
-          delay(10);
-        }
         Serial.printf("ERR %s\n", err.c_str());
+        // 再同期: 入力が USB_RESYNC_QUIET_MS 途切れるまで読み捨てる（行コマンドとして解釈しない）
+        uint32_t lastByte = millis();
+        while (millis() - lastByte < USB_RESYNC_QUIET_MS) {
+          bool got = false;
+          while (Serial.available()) { Serial.read(); got = true; }
+          if (got) lastByte = millis();
+          led::tick();
+          delay(5);
+        }
+        Serial.println("RESYNC");
       }
       return;
     }
+    case CmdType::Claim:
+      server::setAutoClaim(c.arg != 0);
+      Serial.printf("CLAIM %s\n", server::autoClaim() ? "ON" : "OFF");
+      return;
     case CmdType::Unknown:
     default:
       Serial.println("ERR unknown_command");
@@ -263,7 +295,7 @@ static void pollNetwork() {
     return;
   }
   lastPoll = millis();
-  server::pollOnce();
+  server::tick();  // 未送信の完了報告があれば送り直しだけ、無ければ claim
   // 印刷の後も、問い合わせの間隔は印刷が終わってから数える
   lastPoll = millis();
   switch (server::health()) {

@@ -34,6 +34,12 @@ int queryGsR1();             // 1D 72 01
 // 帯の途中で失敗したら false。err に理由。プリンタは初期化し直す。
 bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx,
                  String& err);
+// 今の（または最後の）印刷で送り終えた行数
+uint32_t rowsSent();
+// 最後の印刷中に G19 が busy（PRINTER_CTS_BUSY_LEVEL）になった回数と累積時間（ms）。
+// PRINTER_USE_CTS に関係なく、送る区切りごとにピンを見て記録している。
+uint32_t ctsBusyCount();
+uint32_t ctsBusyMs();
 // 紙送り（LF を PRINTER_FEED_LINES 回）
 void feed();
 // 内蔵のテストパターンを印刷する

@@ -109,16 +109,26 @@ int queryGsR1() {
   return readByte(PRINTER_STATUS_TIMEOUT_MS);
 }
 
-// 受信できるまで待つ（PRINTER_USE_CTS のとき）
+// CTS（G19）の記録。設定に関係なく、送る区切りごとにピンを見て数える。
+static BusyStats ctsStats;
+static uint32_t rowsSentCount = 0;
+
+static bool ctsBusyNow() { return digitalRead(PRINTER_PIN_CTS) == PRINTER_CTS_BUSY_LEVEL; }
+
+// 受信できるまで待つ（PRINTER_USE_CTS のとき）。待たない設定でも記録は取る。
 static bool waitClear(String& err) {
+  bool busy = ctsBusyNow();
+  ctsStats.sample(busy, millis());
 #if PRINTER_USE_CTS
   const uint32_t start = millis();
-  while (digitalRead(PRINTER_PIN_CTS) == PRINTER_CTS_BUSY_LEVEL) {
+  while (busy) {
     if (millis() - start > PRINTER_CTS_TIMEOUT_MS) {
-      err = "printer_busy_timeout";
+      err = "printer_busy";
       return false;
     }
     delay(1);
+    busy = ctsBusyNow();
+    ctsStats.sample(busy, millis());
   }
 #else
   (void)err;
@@ -134,10 +144,9 @@ static bool sendBand(const uint8_t* data, uint16_t rows, String& err) {
   const size_t total = static_cast<size_t>(rows) * kRowBytes;
   for (size_t off = 0; off < total; off += PRINTER_CHUNK_BYTES) {
     if (!waitClear(err)) {
-      // ヘッダを送ったあとで止まると、プリンタは残りのデータを待っている。
-      // そのまま ESC @ を送るとデータとして読まれるので、残りを 0（白）で埋めてから戻る。
-      for (size_t i = off; i < total; ++i) uart.write(static_cast<uint8_t>(0));
-      uart.flush();
+      // 受信できないまま残りを無理に送ることはしない。帯の途中で打ち切り、
+      // 呼び出し元でプリンタを初期化し直す。プリンタは GS v 0 の残りのデータを待っている
+      // 可能性があり、初期化命令がデータとして読まれるかもしれない（実機で未確認）。
       return false;
     }
     const size_t n = min(static_cast<size_t>(PRINTER_CHUNK_BYTES), total - off);
@@ -153,6 +162,7 @@ static bool sendBand(const uint8_t* data, uint16_t rows, String& err) {
       static_cast<uint32_t>(rows) * PRINTER_ROW_DELAY_US + PRINTER_BAND_DELAY_MS * 1000UL;
   if (waitUs >= 1000) delay(waitUs / 1000);
   if (waitUs % 1000) delayMicroseconds(waitUs % 1000);
+  ctsStats.sample(ctsBusyNow(), millis());
 #if PRINTER_SYNC_AFTER_BAND
   // GS r 1 は受信済みのデータを処理し終えてから応答する（PDF 1.25 の説明）
   drainRx();
@@ -170,25 +180,35 @@ static bool sendBand(const uint8_t* data, uint16_t rows, String& err) {
 bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx,
                  String& err) {
   if (bandRows == 0 || bandRows > FETCH_ROWS) bandRows = FETCH_ROWS;
+  ctsStats.reset();
+  rowsSentCount = 0;
   init();
   uint32_t offset = 0;
+  bool ok = true;
   while (offset < height) {
     const uint16_t rows = nextBandRows(height - offset, bandRows);
     // 帯を全部受け取ってからヘッダを送る。受け取りに失敗しても、
     // プリンタが GS v 0 のデータ待ちのまま残ることはない。
     if (!reader(ctx, offset, rows, bandBuf, err)) {
       if (err.length() == 0) err = "read_failed";
-      init();
-      return false;
+      ok = false;
+      break;
     }
     if (!sendBand(bandBuf, rows, err)) {
-      init();
-      return false;
+      ok = false;
+      break;
     }
     offset += rows;
+    rowsSentCount = offset;
   }
-  return true;
+  ctsStats.finish(millis());
+  if (!ok) init();
+  return ok;
 }
+
+uint32_t rowsSent() { return rowsSentCount; }
+uint32_t ctsBusyCount() { return ctsStats.count; }
+uint32_t ctsBusyMs() { return ctsStats.totalMs; }
 
 void feed() {
   for (int i = 0; i < PRINTER_FEED_LINES; ++i) uart.write(static_cast<uint8_t>(0x0A));

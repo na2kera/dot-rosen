@@ -44,19 +44,27 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 
 ## サーバーとのやり取り（docs/api.md「5. プリンタ用 API」）
 
-すべて `Authorization: Bearer <PRINTER_TOKEN>` つき、HTTPS（既定でルート証明書を検証）。
+> **重要: 既定の設定ではプリンタが本当に印字できたかは確かめていない。**
+> 既定（`PRINTER_USE_CTS 0`、`PRINTER_SYNC_AFTER_BAND 0`）では、プリンタからは何も読み返さない。`done` の `ok:true` は「全部の行をプリンタに送り終えた」という意味で、**紙切れ・プリンタの電源断・速度の食い違いがあっても `ok:true` を報告する**。その場合は管理画面から再印刷する。
 
-1. Wi-Fi 接続後、NTP で時刻を合わせる。合うまでサーバーには接続しない（15 秒合わなければ黄色、`LAST_ERROR ntp_timeout`。その後もやり直し続ける）。
-   - 注: このコア（Arduino-ESP32 2.0.17）の設定には証明書の日付の確認（`MBEDTLS_HAVE_TIME_DATE`）が無いように見える。時刻合わせは取り決めどおり行っているが、実機で必要かどうかは未確認。
-2. 3 秒おきに `POST /api/printer/claim`。204 なら何もしない。200 なら `{ "jobId", "width": 384, "height" }`。
-3. `GET /api/printer/jobs/<jobId>/rows?offset=<行>&count=<FETCH_ROWS>` で帯（既定 96 行 = 4608 バイト）を取得し、その帯を `GS v 0` で印刷する。これを最後の行まで繰り返す。接続は keep-alive で使い回す。
-   - 帯の取得に失敗したら `FETCH_RETRIES` 回までやり直す（400 / 401 / 404 / 409 はやり直さない）。
+すべて `Authorization: Bearer <PRINTER_TOKEN>` つき、HTTPS（既定でルート証明書を検証）。TLS のハンドシェイクは `TLS_HANDSHAKE_TIMEOUT_S`（10 秒）で打ち切る。
+
+1. Wi-Fi 接続後、NTP で時刻を合わせる。合うまでサーバーには接続しない（15 秒合わなければ黄色、`LAST_ERROR ntp_timeout`。その後もやり直し続ける）。待つ間もボタンと USB は動く。
+   - 注（未検証）: このコア（Arduino-ESP32 2.0.17）の設定には `MBEDTLS_HAVE_TIME_DATE` が無く、**証明書の有効期間（日付）は検証されない可能性がある**。証明書の署名の検証は行う。時刻合わせは取り決めどおり行っている。
+2. 3 秒おきに `POST /api/printer/claim`（`AUTO_CLAIM` / `CLAIM ON` のとき）。204 なら何もしない。
+   - 200 の本文は `CLAIM_BODY_MAX`（256 バイト）までのバッファに、Content-Length か chunked の終端まで読み切る。
+   - JSON が閉じ括弧まであること、`jobId` / `width` / `height` が終端まで読める 0 以上の整数であること、`width` が 384、`height` が 1〜`MAX_JOB_HEIGHT`（3200）であることを確かめる。
+   - どれかが欠けたら印刷しない。`jobId` が読めれば `done` に `{"ok":false,"error":"bad_claim"}` を報告する。`jobId` も読めなければ報告できないので、`LAST_ERROR claim_bad_no_job_...` を記録して次の周期へ。
+3. `GET /api/printer/jobs/<jobId>/rows?offset=<行>&count=<FETCH_ROWS>` で帯（既定 96 行 = 4608 バイト）を取得し、その帯を `GS v 0` で印刷する。これを最後の行まで繰り返す。
+   - 帯の取得に失敗したら `FETCH_RETRIES` 回までやり直す（400 / 401 / 404 / 409 はやり直さない）。1 つの帯にかける時間は、やり直しを含めて `FETCH_TOTAL_TIMEOUT_MS`（90 秒）まで。
    - それでもだめなら、そこまで刷った分はそのままにして（紙を送ってちぎれるようにする）失敗を報告する。先頭から刷り直さない。
 4. 紙を `PRINTER_FEED_LINES` 行送り、`POST /api/printer/jobs/<jobId>/done` に `{"ok":true}` か `{"ok":false,"error":"<64 文字までの英数字と記号>"}`。
-   - 届かなければ間隔を 2 倍ずつ空けて `DONE_RETRIES` 回まで送り直す。200 と 409 はどちらも受理済みとして扱う。
-   - **注意**: 既定の設定（`PRINTER_USE_CTS 0`、`PRINTER_SYNC_AFTER_BAND 0`）では、プリンタからは何も読み返さない。`ok:true` は「全部の行をプリンタに送り終えた」という意味で、紙切れ・プリンタの電源断・速度の食い違いがあっても `ok:true` になる。
+   - 200 は受理。409 は「サーバー側ではすでに別の結果で終わっている」で、送り直しはやめるが `LAST_ERROR done_conflict_job_<id>` を記録する（STATUS で見える）。
+   - それ以外（通信失敗を含む）は、結果を **未送信の完了報告** として持ち続け、問い合わせの周期（3 秒）ごとに 200 か 409 が返るまで送り直す。その間は次の `claim` をしない。Wi-Fi が切れても保持し、つながり直したら送り直す。電源を切ると消える（そのときサーバーは 5 分後に時間切れとして扱う）。送り直しの待ちの間もボタンと USB コマンドは動く。
 
-`error` の主な値: `rows_http_<コード>`、`rows_conn_<番号>`、`rows_bad_length_<長さ>`、`rows_read_timeout`、`rows_disconnected`、`wifi_lost`、`printer_busy_timeout`（CTS 使用時）、`printer_no_response` / `paper_out`（`PRINTER_SYNC_AFTER_BAND` 使用時）、`bad_job_size`。
+接続は keep-alive で使い回す。ただし応答の本文を最後まで読み切れたときだけで、読み切れない場合（エラー応答、長さ不明、時間切れなど）は接続を閉じる。
+
+`error` の主な値: `bad_claim`、`rows_http_<コード>`、`rows_conn_<番号>`、`rows_bad_length_<長さ>`、`rows_read_timeout`、`rows_disconnected`、`wifi_lost`（やり直しの時間切れでは末尾に `_gave_up`）、`printer_busy`（CTS 使用時。その帯で打ち切ってプリンタを初期化し直す）、`printer_no_response` / `paper_out`（`PRINTER_SYNC_AFTER_BAND` 使用時）。
 
 証明書の検証を切りたいとき（非常用）は `config.h` の `TLS_VERIFY` を 0 にする。組み込んだルート証明書は `include/root_ca.h` の先頭に一覧がある。
 
@@ -64,34 +72,51 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 
 | コマンド | 動き | 返事 |
 |---|---|---|
-| `STATUS` | 状態を返す | `WIFI ...` / `SERVER ...` / `PRINTER baud=... cts_g19=... use_cts=...` / `LAST_ERROR ...` の 4 行 |
+| `STATUS` | 状態を返す | 下記の 10 行 |
 | `TEST 1` / `TEST 2` | ボタンと同じテスト印刷 | `DONE` か `ERR <理由>` |
 | `BAUD 115200` / `BAUD 9600` | プリンタに速度変更の命令（ESC ## SBDR）を今の速度で送り、こちらの速度も切り替えて、短いテスト印刷（64 行）をする | `BAUD <速度>` のあと `DONE` か `ERR <理由>` |
 | `BAUD LOCAL 115200` / `BAUD LOCAL 9600` | **こちら側の速度だけ**切り替える（プリンタには送らない）。速度が食い違ったときの復旧用 | `BAUD LOCAL <速度>` |
 | `BAUD ?` | プリンタに速度を問い合わせる（GS g 7） | `BAUD local=<こちらの速度> printer=<応答の文字列 か no_response>` |
 | `PAPER` | 紙の状態を問い合わせる（DLE EOT 2、DLE EOT 4、GS r 1） | `PAPER raw dle_eot2=0x.. dle_eot4=0x.. gs_r1=0x..`（応答なしは `none`）のあと、`PAPER ok` / `PAPER out` / `PAPER ok near_end` / `PAPER unknown` / `PAPER 未対応 (no_response)` |
-| `PRINT <高さ>` | PC から生データを受け取って印刷する（下記） | `READY <バイト数>` を帯ごとに、最後に `DONE` か `ERR <理由>` |
+| `PRINT <高さ>` | PC から生データを受け取って印刷する（下記） | `READY <バイト数>` を帯ごとに、最後に `DONE`、失敗なら `ERR <理由>` のあと `RESYNC` |
+| `CLAIM ON` / `CLAIM OFF` | 自動 claim の入・切（電源を切ると `AUTO_CLAIM` の値に戻る）。未送信の完了報告の送り直しは入・切に関係なく続ける | `CLAIM ON` / `CLAIM OFF` |
 | `HELP` | コマンド一覧 | 1 行 |
 
-サーバーとの通信中（接続の待ち・帯の取得・印刷・`done` の送り直し）は処理が止まるので、その間のボタンと USB コマンドは受け付けが遅れる（短押しは取りこぼすことがある）。
+`STATUS` の返事（1 行ずつ）:
 
-ほかに、起動時や動作中に `[boot]`、`[wifi]`、`[job]`、`[done]`、`[error]` などで始まるログ行が出る。PC 側のプログラムはこれらを読み飛ばすこと。
+```
+WIFI connected ssid=... ip=... rssi=-55      （または disconnected / not_configured）
+SERVER ok http=204 url=... tls=verify auto_claim=on
+NTP synced                                    （または not_synced）
+JOB id=42 rows_sent=960 height=1800 printing=0   （今の、または最後の印刷。rows_sent は USB / テスト印刷でも更新）
+PENDING_DONE none                             （または job=42 ok=0 error=rows_http_500 attempts=3）
+PRINTER baud=9600 cts_g19=0 use_cts=0 cts_busy_level=1 sync_after_band=0
+CTS_LAST_PRINT busy_count=0 busy_ms=0         （最後の印刷中に G19 が busy 側になった回数と累積時間。設定に関係なく記録）
+HEAP free=... max_block=...                   （空きヒープと最大の空きブロック）
+RESET reason=1 uptime_s=...                   （esp_reset_reason() の値。1 = 電源投入、4 = ソフトウェア、5 = 例外/パニック、6/7 = ウォッチドッグ など）
+LAST_ERROR ...
+```
+
+サーバーとの 1 回の通信中（接続の待ち・帯の取得・印刷）は処理が止まるので、その間のボタンと USB コマンドは受け付けが遅れる（短押しは取りこぼすことがある）。`CLAIM OFF` の間、LED はサーバーとの最後の状態のまま変わらない。
+
+ほかに、起動時や動作中に `[boot]`、`[wifi]`、`[ntp]`、`[job]`、`[rows]`、`[done]`、`[error]`、`[button]` で始まるログ行が出る。PC 側のプログラムはこれらを読み飛ばすこと。
 
 ### `PRINT <高さ>` の手順
 
-データは 1 行 48 バイト（384 ドット）、左端が最上位ビット、1 が黒、上の行から順（サーバーの `rows` と同じ形式）。高さは 1〜`MAX_JOB_HEIGHT`（既定 4000）。
+データは 1 行 48 バイト（384 ドット）、左端が最上位ビット、1 が黒、上の行から順（サーバーの `rows` と同じ形式）。高さは 1〜`MAX_JOB_HEIGHT`（既定 3200）。
 
 1. PC → `PRINT 2200\n`
 2. ATOM → `READY <n>\n`（n = その帯のバイト数。既定では 4608 = 96 行。最後の帯は残りの分）
 3. PC → ちょうど n バイトの生データを送る
 4. 2〜3 を繰り返す。全部の行を受け取ると ATOM → `DONE\n`
-5. 途中で `USB_READ_TIMEOUT_MS`（既定 15 秒）データが来なければ `ERR usb_timeout`。送りかけのデータは捨てられ、プリンタは初期化し直される。
+5. 途中で `USB_READ_TIMEOUT_MS`（既定 15 秒）データが来なければ `ERR usb_timeout`。プリンタは初期化し直される。
+6. **失敗後の再同期**: `ERR ...` を返したあと、ATOM は入力が `USB_RESYNC_QUIET_MS`（1 秒）途切れるまで受信データを読み捨てる。その間に届いたものは行コマンドとしても解釈しない。読み捨てが終わると `RESYNC\n` を返す。PC 側は `ERR` を受けたら送信を止め、`RESYNC` を待ってから次のコマンドを送る。
 
 `READY` を待たずに次の帯を送ると、受信バッファ（1 帯 + 256 バイト）があふれる可能性がある。
 
 ## 実機で最初に確かめる手順
 
-secrets.h なしのビルドで 1〜4 を確かめ、最後に secrets.h を入れて 5 を確かめる。シリアルモニタを開いておく。
+テスト印刷が出ることを確かめるまでは、サーバーの印刷を取りに行かないようにする。**secrets.h を作らずに書き込む**（または secrets.h の `SERVER_URL` を入れない／`AUTO_CLAIM` を 0 にする）か、起動直後に `CLAIM OFF` を送る。これで 1〜4 を確かめ、最後に 5 を確かめる。シリアルモニタを開いておく。
 
 1. **テスト印刷 1**: 本体ボタンを短く押す（または `TEST 1`）。
    - 左右端の線が両方出ているか（384 ドット幅が収まっているか）、1 ドットの線・市松がつぶれていないか、黒 10%〜100% の段階が分かれているか、図形がゆがんでいないかを見る。
@@ -104,11 +129,12 @@ secrets.h なしのビルドで 1〜4 を確かめ、最後に secrets.h を入�
    - 乱れるときは、帯の途中で乱れるなら `PRINTER_CHUNK_DELAY_US`（1 行ごとの待ち）を、帯の切れ目で乱れるなら `PRINTER_ROW_DELAY_US`（帯を送ったあとの待ち）を増やす。`FETCH_ROWS` を小さくするのも効く。`STATUS` の `cts_g19` が印刷中に変わるか見て、使えそうなら `PRINTER_USE_CTS` と `PRINTER_CTS_BUSY_LEVEL` を設定する。
 4. **紙切れ**: 紙がある状態で `PAPER`、紙を外して `PAPER`。`raw` の値が変わるか、`PAPER out` になるかを記録する。応答が無ければ紙切れは検知できない。
    - `gs_r1` が応答し、紙を外すと `PAPER out` になるなら、`config.h` の `PRINTER_SYNC_AFTER_BAND` を 1 にする。帯ごとに処理の完了を待ち、紙切れなら `done` に `ok:false`（`paper_out`）を送るようになる。
-5. **サーバーからの印刷**: secrets.h を書いて書き込み、LED が緑になるのを確かめてから、画面から印刷を申し込む。印刷後に管理画面で `done` になっているか確かめる。印刷中に Wi-Fi を切って `failed` になるかも確かめる。
+5. **サーバーからの印刷**: secrets.h を書いて書き込み（`CLAIM OFF` にしていたなら `CLAIM ON`）、LED が緑になるのを確かめてから、画面から印刷を申し込む。印刷後に管理画面で `done` になっているか確かめる。
+   - 印刷中に Wi-Fi を切り、`failed` になるか、`STATUS` の `PENDING_DONE` に結果が残り、つながり直したあとに送られて `none` に戻るかを確かめる。
 
 ## PC 上のテスト
 
-機器に依存しない部分（`GS v 0` ヘッダ、帯分割、ボーレート命令、状態の読み取り、テストパターン、コマンドの読み取り、claim の JSON 読み取り、error 文字列）を PC で確かめる。
+機器に依存しない部分（`GS v 0` ヘッダ、帯分割、ボーレート命令、状態の読み取り、テストパターン、コマンドの読み取り、claim の応答の検査、HTTP 本文の終端の判定（Content-Length / chunked）、done の応答の分類と未送信の完了報告の予約、rows のやり直しの判定、CTS の busy の集計、error 文字列）を PC で確かめる。
 
 ```sh
 cd firmware

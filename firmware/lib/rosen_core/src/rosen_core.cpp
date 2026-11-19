@@ -262,6 +262,10 @@ Command parseCommand(const char* line) {
       c.type = CmdType::Baud; c.arg = v;
     } else if (equalsIgnoreCase(w, wn, "PRINT") && parseUint(t.p[1], t.n[1], v) && v > 0) {
       c.type = CmdType::Print; c.arg = v;
+    } else if (equalsIgnoreCase(w, wn, "CLAIM") && equalsIgnoreCase(t.p[1], t.n[1], "ON")) {
+      c.type = CmdType::Claim; c.arg = 1;
+    } else if (equalsIgnoreCase(w, wn, "CLAIM") && equalsIgnoreCase(t.p[1], t.n[1], "OFF")) {
+      c.type = CmdType::Claim; c.arg = 0;
     }
     return c;
   }
@@ -276,43 +280,330 @@ Command parseCommand(const char* line) {
 // ---------------------------------------------------------------------------
 // サーバー応答の読み取り
 // ---------------------------------------------------------------------------
-// "key" : <数値> を探す。キーは引用符つきで完全一致させる。
-static bool findJsonUint(const char* json, const char* key, uint32_t& out) {
-  const size_t klen = strlen(key);
-  const char* p = json;
-  while ((p = strchr(p, '"')) != nullptr) {
-    const char* k = p + 1;
-    if (strncmp(k, key, klen) == 0 && k[klen] == '"') {
-      const char* q = k + klen + 1;
-      while (*q && isspace(static_cast<unsigned char>(*q))) ++q;
-      if (*q != ':') { p = k; continue; }
-      ++q;
-      while (*q && isspace(static_cast<unsigned char>(*q))) ++q;
-      if (*q < '0' || *q > '9') return false;
-      uint64_t v = 0;
-      while (*q >= '0' && *q <= '9') {
-        v = v * 10 + static_cast<uint64_t>(*q - '0');
-        if (v > 0xFFFFFFFFull) return false;
-        ++q;
+// 小さな JSON の読み取り器（オブジェクト 1 つ。claim の応答用）
+namespace {
+struct JsonScan {
+  const char* p;
+  const char* end;
+  bool atEnd() const { return p >= end; }
+  void ws() {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
+  }
+  // "..." を読み、中身（エスケープはそのまま）の範囲を返す
+  bool str(const char*& s, size_t& n) {
+    if (atEnd() || *p != '"') return false;
+    ++p;
+    s = p;
+    while (p < end && *p != '"') {
+      if (static_cast<unsigned char>(*p) < 0x20) return false;
+      if (*p == '\\') {
+        ++p;
+        if (p >= end) return false;
       }
-      // 小数・指数は受け付けない
-      if (*q == '.' || *q == 'e' || *q == 'E') return false;
-      out = static_cast<uint32_t>(v);
-      return true;
+      ++p;
     }
-    p = k;
+    if (p >= end) return false;
+    n = static_cast<size_t>(p - s);
+    ++p;  // 閉じ "
+    return true;
+  }
+  static bool isTerm(char c) {
+    return c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\r' || c == '\n';
+  }
+  // JSON の数値を読み飛ばす。0 以上の整数（32 ビット）なら isUint と値も返す。
+  bool number(bool& isUint, uint32_t& v) {
+    const char* s = p;
+    bool neg = false, frac = false;
+    if (p < end && *p == '-') { neg = true; ++p; }
+    if (p >= end || *p < '0' || *p > '9') return false;
+    uint64_t acc = 0;
+    bool overflow = false;
+    while (p < end && *p >= '0' && *p <= '9') {
+      acc = acc * 10 + static_cast<uint64_t>(*p - '0');
+      if (acc > 0xFFFFFFFFull) overflow = true;
+      ++p;
+    }
+    if (p < end && *p == '.') {
+      frac = true; ++p;
+      if (p >= end || *p < '0' || *p > '9') return false;
+      while (p < end && *p >= '0' && *p <= '9') ++p;
+    }
+    if (p < end && (*p == 'e' || *p == 'E')) {
+      frac = true; ++p;
+      if (p < end && (*p == '+' || *p == '-')) ++p;
+      if (p >= end || *p < '0' || *p > '9') return false;
+      while (p < end && *p >= '0' && *p <= '9') ++p;
+    }
+    // 数値は終端まで読めていること（本文の途中で切れていない）
+    if (p >= end || !isTerm(*p)) return false;
+    (void)s;
+    isUint = !neg && !frac && !overflow;
+    v = static_cast<uint32_t>(acc);
+    return true;
+  }
+  bool literal(const char* w) {
+    const size_t n = strlen(w);
+    if (static_cast<size_t>(end - p) < n || strncmp(p, w, n) != 0) return false;
+    p += n;
+    return p < end && isTerm(*p);
+  }
+  // 値を 1 つ読み飛ばす（入れ子は深さ 8 まで）
+  bool skipValue(int depth) {
+    if (atEnd() || depth > 8) return false;
+    const char c = *p;
+    if (c == '"') { const char* s; size_t n; return str(s, n); }
+    if (c == '{' || c == '[') {
+      const char close = c == '{' ? '}' : ']';
+      ++p;
+      ws();
+      if (!atEnd() && *p == close) { ++p; return true; }
+      while (true) {
+        if (c == '{') {
+          const char* s; size_t n;
+          if (!str(s, n)) return false;
+          ws();
+          if (atEnd() || *p != ':') return false;
+          ++p;
+          ws();
+        }
+        if (!skipValue(depth + 1)) return false;
+        ws();
+        if (atEnd()) return false;
+        if (*p == ',') { ++p; ws(); continue; }
+        if (*p == close) { ++p; return true; }
+        return false;
+      }
+    }
+    if (c == 't') return literal("true");
+    if (c == 'f') return literal("false");
+    if (c == 'n') return literal("null");
+    bool u; uint32_t v;
+    return number(u, v);
+  }
+};
+
+bool keyIs(const char* s, size_t n, const char* key) {
+  return strlen(key) == n && strncmp(s, key, n) == 0;
+}
+
+bool parseClaimRange(const char* json, size_t len, ClaimInfo& out) {
+  JsonScan j{json, json + len};
+  j.ws();
+  if (j.atEnd() || *j.p != '{') return false;
+  ++j.p;
+  bool hasJob = false, hasW = false, hasH = false;
+  ClaimInfo c{0, 0, 0};
+  j.ws();
+  if (!j.atEnd() && *j.p == '}') return false;  // 空のオブジェクト
+  while (true) {
+    const char* k; size_t kn;
+    if (!j.str(k, kn)) return false;
+    j.ws();
+    if (j.atEnd() || *j.p != ':') return false;
+    ++j.p;
+    j.ws();
+    uint32_t* slot = nullptr;
+    bool* seen = nullptr;
+    if (keyIs(k, kn, "jobId")) { slot = &c.jobId; seen = &hasJob; }
+    else if (keyIs(k, kn, "width")) { slot = &c.width; seen = &hasW; }
+    else if (keyIs(k, kn, "height")) { slot = &c.height; seen = &hasH; }
+    if (slot) {
+      bool isUint = false; uint32_t v = 0;
+      if (j.atEnd() || (*j.p != '-' && (*j.p < '0' || *j.p > '9'))) return false;
+      if (!j.number(isUint, v) || !isUint || *seen) return false;
+      *slot = v;
+      *seen = true;
+    } else if (!j.skipValue(0)) {
+      return false;
+    }
+    j.ws();
+    if (j.atEnd()) return false;  // 閉じ括弧が無い
+    if (*j.p == ',') { ++j.p; j.ws(); continue; }
+    if (*j.p == '}') { ++j.p; break; }
+    return false;
+  }
+  j.ws();
+  if (!j.atEnd()) return false;  // 閉じ括弧のあとに余計なもの
+  if (!hasJob || !hasW || !hasH) return false;
+  out = c;
+  return true;
+}
+
+// 形が壊れていても "jobId" : <整数><終端> があれば読む（失敗の報告用）
+bool looseJobId(const char* json, size_t len, uint32_t& out) {
+  const char* end = json + len;
+  static const char kKey[] = "\"jobId\"";
+  const size_t kn = sizeof(kKey) - 1;
+  for (const char* p = json; p + kn <= end; ++p) {
+    if (strncmp(p, kKey, kn) != 0) continue;
+    JsonScan j{p + kn, end};
+    j.ws();
+    if (j.atEnd() || *j.p != ':') continue;
+    ++j.p;
+    j.ws();
+    bool isUint = false; uint32_t v = 0;
+    if (j.atEnd() || *j.p < '0' || *j.p > '9') continue;
+    if (j.number(isUint, v) && isUint) { out = v; return true; }
   }
   return false;
 }
+}  // namespace
 
 bool parseClaimJson(const char* json, ClaimInfo& out) {
   if (!json) return false;
+  return parseClaimRange(json, strlen(json), out);
+}
+
+ClaimCheck checkClaim(const char* body, size_t len, uint32_t maxHeight, ClaimInfo& out) {
+  out = ClaimInfo{0, 0, 0};
+  if (!body) return ClaimCheck::BadNoJob;
   ClaimInfo c{0, 0, 0};
-  if (!findJsonUint(json, "jobId", c.jobId)) return false;
-  if (!findJsonUint(json, "width", c.width)) return false;
-  if (!findJsonUint(json, "height", c.height)) return false;
-  out = c;
-  return true;
+  if (parseClaimRange(body, len, c)) {
+    out = c;
+    if (c.width == kWidthDots && c.height >= 1 && c.height <= maxHeight) return ClaimCheck::Ok;
+    return ClaimCheck::BadWithJob;
+  }
+  uint32_t job = 0;
+  if (looseJobId(body, len, job)) {
+    out.jobId = job;
+    return ClaimCheck::BadWithJob;
+  }
+  return ClaimCheck::BadNoJob;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP 本文の読み取り
+// ---------------------------------------------------------------------------
+void BodyReader::begin(Mode mode, int32_t contentLength, uint8_t* buf, size_t cap) {
+  mode_ = mode;
+  buf_ = buf;
+  cap_ = cap;
+  size_ = 0;
+  error_ = "";
+  ch_ = Ch::SizeHex;
+  hexDigits_ = 0;
+  remaining_ = 0;
+  state_ = State::More;
+  if (mode == Mode::Length) {
+    if (contentLength < 0) { fail("no_length"); return; }
+    if (buf_ && static_cast<size_t>(contentLength) > cap_) { fail("too_large"); return; }
+    remaining_ = static_cast<uint32_t>(contentLength);
+    if (remaining_ == 0) state_ = State::Done;
+  }
+}
+
+BodyReader::State BodyReader::store(uint8_t c) {
+  if (buf_) {
+    if (size_ >= cap_) return fail("too_large");
+    buf_[size_] = c;
+  }
+  ++size_;
+  return state_;
+}
+
+static int hexValue(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+BodyReader::State BodyReader::feed(uint8_t c) {
+  if (state_ != State::More) return state_ == State::Done ? fail("extra_data") : state_;
+  if (mode_ == Mode::Length) {
+    if (store(c) == State::Error) return state_;
+    if (--remaining_ == 0) state_ = State::Done;
+    return state_;
+  }
+  switch (ch_) {
+    case Ch::SizeHex: {
+      const int h = hexValue(c);
+      if (h >= 0) {
+        if (++hexDigits_ > 7) return fail("chunk_too_large");
+        remaining_ = remaining_ * 16 + static_cast<uint32_t>(h);
+        return state_;
+      }
+      if (hexDigits_ == 0) return fail("bad_chunk_size");
+      if (c == '\r') { ch_ = Ch::SizeLF; return state_; }
+      if (c == ';' || c == ' ' || c == '\t') { ch_ = Ch::SizeExt; return state_; }
+      return fail("bad_chunk_size");
+    }
+    case Ch::SizeExt:
+      if (c == '\r') ch_ = Ch::SizeLF;
+      else if (c == '\n') return fail("bad_chunk_line");
+      return state_;
+    case Ch::SizeLF:
+      if (c != '\n') return fail("bad_chunk_line");
+      if (remaining_ == 0) { ch_ = Ch::TrailerStart; return state_; }
+      ch_ = Ch::Data;
+      return state_;
+    case Ch::Data:
+      if (store(c) == State::Error) return state_;
+      if (--remaining_ == 0) ch_ = Ch::DataCR;
+      return state_;
+    case Ch::DataCR:
+      if (c != '\r') return fail("bad_chunk_end");
+      ch_ = Ch::DataLF;
+      return state_;
+    case Ch::DataLF:
+      if (c != '\n') return fail("bad_chunk_end");
+      ch_ = Ch::SizeHex;
+      hexDigits_ = 0;
+      remaining_ = 0;
+      return state_;
+    case Ch::TrailerStart:
+      // 最後のチャンクのあと: 空行（CRLF）で終わり。ほかはトレーラーの行
+      if (c == '\r') { ch_ = Ch::EndLF; return state_; }
+      ch_ = Ch::TrailerLine;
+      return state_;
+    case Ch::TrailerLine:
+      if (c == '\n') ch_ = Ch::TrailerStart;
+      return state_;
+    case Ch::EndLF:
+      if (c != '\n') return fail("bad_chunk_end");
+      state_ = State::Done;
+      return state_;
+  }
+  return fail("bad_state");
+}
+
+DoneOutcome classifyDoneCode(int httpCode) {
+  if (httpCode == 200) return DoneOutcome::Accepted;
+  if (httpCode == 409) return DoneOutcome::Conflict;
+  return DoneOutcome::Retry;
+}
+
+bool rowsRetryable(int httpCode) {
+  return !(httpCode == 400 || httpCode == 401 || httpCode == 404 || httpCode == 409);
+}
+
+void PendingDone::set(uint32_t job, bool okResult, const char* err, uint32_t now) {
+  active = true;
+  jobId = job;
+  ok = okResult;
+  sanitizeErrorCode(okResult ? "" : (err && *err ? err : "unknown"), error, sizeof(error), 64);
+  attempts = 0;
+  nextAt = now;
+}
+
+bool PendingDone::due(uint32_t now) const {
+  return active && static_cast<int32_t>(now - nextAt) >= 0;
+}
+
+void PendingDone::retryLater(uint32_t now, uint32_t interval) {
+  ++attempts;
+  nextAt = now + interval;
+}
+
+void BusyStats::sample(bool busy, uint32_t now) {
+  if (busy && !inBusy) {
+    inBusy = true;
+    since = now;
+    ++count;
+  } else if (!busy && inBusy) {
+    inBusy = false;
+    totalMs += now - since;
+  }
 }
 
 size_t sanitizeErrorCode(const char* in, char* out, size_t outSize, size_t maxLen) {

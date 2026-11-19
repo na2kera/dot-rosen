@@ -177,6 +177,144 @@ static void testClaim() {
   CHECK(!parseClaimJson(nullptr, c));
 }
 
+static ClaimCheck cc(const char* s, ClaimInfo& c) { return checkClaim(s, strlen(s), 3200, c); }
+
+static void testClaimStrict() {
+  ClaimInfo c{};
+  CHECK(cc("{\"jobId\":42,\"width\":384,\"height\":1800}", c) == ClaimCheck::Ok);
+  CHECK(c.jobId == 42 && c.height == 1800);
+  CHECK(cc(" \r\n{\"jobId\":1,\"width\":384,\"height\":3200}\n", c) == ClaimCheck::Ok);
+  // 知らないキー（入れ子・文字列・真偽値・null）は読み飛ばす
+  CHECK(cc("{\"x\":{\"a\":[1,2,{\"b\":\"}\"}]},\"jobId\":5,\"s\":\"a\\\"b\",\"t\":true,"
+           "\"n\":null,\"f\":-1.5e3,\"width\":384,\"height\":10}", c) == ClaimCheck::Ok);
+  CHECK(c.jobId == 5);
+  // 高さ・幅の範囲
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":0}", c) == ClaimCheck::BadWithJob && c.jobId == 7);
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":3201}", c) == ClaimCheck::BadWithJob);
+  CHECK(cc("{\"jobId\":7,\"width\":383,\"height\":10}", c) == ClaimCheck::BadWithJob);
+  // 欠け・壊れ
+  CHECK(cc("{\"jobId\":7,\"width\":384}", c) == ClaimCheck::BadWithJob && c.jobId == 7);
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":10", c) == ClaimCheck::BadWithJob);  // 閉じ括弧なし
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":1", c) == ClaimCheck::BadWithJob);   // 数値の途中で切れた
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":10}x", c) == ClaimCheck::BadWithJob);  // 後ろに余計なもの
+  CHECK(cc("{\"jobId\":7,\"width\":384,\"height\":10.0}", c) == ClaimCheck::BadWithJob);  // 小数
+  CHECK(cc("{\"jobId\":7,\"jobId\":8,\"width\":384,\"height\":10}", c) == ClaimCheck::BadWithJob);  // 重複
+  CHECK(cc("{\"jobId\":7,,\"width\":384,\"height\":10}", c) == ClaimCheck::BadWithJob);
+  // jobId が読めない
+  CHECK(cc("{\"jobId\":\"7\",\"width\":384,\"height\":10}", c) == ClaimCheck::BadNoJob);
+  CHECK(cc("{\"jobId\":-7,\"width\":384,\"height\":10}", c) == ClaimCheck::BadNoJob);
+  CHECK(cc("{\"jobId\":12", c) == ClaimCheck::BadNoJob);  // 途中で切れている（123 の可能性）
+  CHECK(cc("", c) == ClaimCheck::BadNoJob);
+  CHECK(cc("<html>error</html>", c) == ClaimCheck::BadNoJob);
+  CHECK(checkClaim(nullptr, 0, 3200, c) == ClaimCheck::BadNoJob);
+  // NUL 終端が無くても len で止まる
+  const char raw[] = "{\"jobId\":3,\"width\":384,\"height\":9}GARBAGE";
+  CHECK(checkClaim(raw, strlen("{\"jobId\":3,\"width\":384,\"height\":9}"), 3200, c) == ClaimCheck::Ok);
+}
+
+static BodyReader::State feedAll(BodyReader& r, const char* s) {
+  BodyReader::State st = r.state();
+  for (const char* p = s; *p; ++p) st = r.feed(static_cast<uint8_t>(*p));
+  return st;
+}
+
+static void testBodyReader() {
+  uint8_t buf[32];
+  BodyReader r;
+  // Content-Length
+  r.begin(BodyReader::Mode::Length, 5, buf, sizeof(buf));
+  CHECK(feedAll(r, "hell") == BodyReader::State::More);
+  CHECK(feedAll(r, "o") == BodyReader::State::Done && r.size() == 5 && memcmp(buf, "hello", 5) == 0);
+  CHECK(r.feed('x') == BodyReader::State::Error);  // 余計なデータ
+  r.begin(BodyReader::Mode::Length, 0, buf, sizeof(buf));
+  CHECK(r.state() == BodyReader::State::Done);
+  r.begin(BodyReader::Mode::Length, 33, buf, sizeof(buf));
+  CHECK(r.state() == BodyReader::State::Error);  // 上限超え
+  r.begin(BodyReader::Mode::Length, -1, buf, sizeof(buf));
+  CHECK(r.state() == BodyReader::State::Error);
+  // 捨てる（buf なし）なら上限なし
+  r.begin(BodyReader::Mode::Length, 100, nullptr, 0);
+  for (int i = 0; i < 99; ++i) r.feed('a');
+  CHECK(r.state() == BodyReader::State::More);
+  CHECK(r.feed('a') == BodyReader::State::Done);
+
+  // chunked
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "4\r\nWiki\r\n5;ext=1\r\npedia\r\n") == BodyReader::State::More);
+  CHECK(feedAll(r, "0\r\n") == BodyReader::State::More);  // まだ最後の空行が無い
+  CHECK(feedAll(r, "\r\n") == BodyReader::State::Done);
+  CHECK(r.size() == 9 && memcmp(buf, "Wikipedia", 9) == 0);
+  // 16 進の大文字・トレーラーつき
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "A\r\n0123456789\r\n0\r\nX-T: 1\r\n\r\n") == BodyReader::State::Done);
+  CHECK(r.size() == 10);
+  // 壊れた chunked
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "4\r\nWikiXX") == BodyReader::State::Error);
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "zz\r\n") == BodyReader::State::Error);
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "\r\n") == BodyReader::State::Error);
+  r.begin(BodyReader::Mode::Chunked, -1, buf, 4);
+  CHECK(feedAll(r, "5\r\nabcde") == BodyReader::State::Error);  // 上限超え
+  r.begin(BodyReader::Mode::Chunked, -1, buf, sizeof(buf));
+  CHECK(feedAll(r, "FFFFFFFF\r\n") == BodyReader::State::Error);  // 大きすぎるチャンク
+}
+
+static void testDoneAndRetry() {
+  CHECK(classifyDoneCode(200) == DoneOutcome::Accepted);
+  CHECK(classifyDoneCode(409) == DoneOutcome::Conflict);
+  CHECK(classifyDoneCode(500) == DoneOutcome::Retry);
+  CHECK(classifyDoneCode(401) == DoneOutcome::Retry);
+  CHECK(classifyDoneCode(-1) == DoneOutcome::Retry);
+  CHECK(classifyDoneCode(204) == DoneOutcome::Retry);
+
+  CHECK(!rowsRetryable(400) && !rowsRetryable(401) && !rowsRetryable(404) && !rowsRetryable(409));
+  CHECK(rowsRetryable(500) && rowsRetryable(503) && rowsRetryable(-1) && rowsRetryable(-11));
+
+  PendingDone p;
+  CHECK(!p.active && !p.due(0));
+  p.set(42, false, "rows http 500", 1000);
+  CHECK(p.active && p.jobId == 42 && !p.ok && strcmp(p.error, "rows_http_500") == 0);
+  CHECK(p.due(1000));
+  p.retryLater(1000, 3000);
+  CHECK(p.attempts == 1 && !p.due(3999) && p.due(4000));
+  // millis() の桁あふれをまたいでも動く
+  p.retryLater(0xFFFFF000u, 0x2000);
+  CHECK(!p.due(0xFFFFFFF0u) && p.due(0x00001000u));
+  p.clear();
+  CHECK(!p.active && !p.due(0x00001000u));
+  p.set(7, true, "ignored", 5);
+  CHECK(p.ok && p.error[0] == '\0' && p.attempts == 0);
+  p.set(8, false, "", 5);
+  CHECK(strcmp(p.error, "unknown") == 0);
+  std::string longErr(100, 'e');
+  p.set(9, false, longErr.c_str(), 5);
+  CHECK(strlen(p.error) == 64);
+}
+
+static void testBusyStats() {
+  BusyStats s;
+  s.sample(false, 0);
+  s.sample(true, 10);
+  s.sample(true, 20);
+  s.sample(false, 35);  // 25ms
+  s.sample(true, 100);
+  s.finish(110);        // 10ms
+  CHECK(s.count == 2 && s.totalMs == 35 && !s.inBusy);
+  s.reset();
+  CHECK(s.count == 0 && s.totalMs == 0);
+}
+
+static void testClaimCommand() {
+  Command c = parseCommand("CLAIM ON");
+  CHECK(c.type == CmdType::Claim && c.arg == 1);
+  c = parseCommand("claim off");
+  CHECK(c.type == CmdType::Claim && c.arg == 0);
+  CHECK(parseCommand("CLAIM").type == CmdType::Unknown);
+  CHECK(parseCommand("CLAIM MAYBE").type == CmdType::Unknown);
+}
+
 static void testStrings() {
   char out[80];
   sanitizeErrorCode("rows http 500 \"x\"\\", out, sizeof(out));
@@ -215,6 +353,11 @@ int main(int argc, char** argv) {
   testPatterns();
   testParse();
   testClaim();
+  testClaimStrict();
+  testBodyReader();
+  testDoneAndRetry();
+  testBusyStats();
+  testClaimCommand();
   testStrings();
   if (argc > 1) {
     writePbm(argv[1], Pattern::Test1, "test1.pbm");

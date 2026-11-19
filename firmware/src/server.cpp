@@ -15,6 +15,8 @@
 
 using namespace rosen;
 
+static_assert(MAX_JOB_HEIGHT >= 1, "MAX_JOB_HEIGHT");
+
 namespace server {
 
 static WiFiClientSecure tls;
@@ -22,7 +24,17 @@ static HTTPClient http;
 static Health currentHealth = Health::NotContacted;
 static int httpCode = 0;
 static bool timeOk = false;
+static bool ntpStarted = false;
+static uint32_t ntpStartedAt = 0;
 static String baseUrl;
+static bool autoClaimOn = AUTO_CLAIM != 0;
+
+static uint32_t curJobId = 0;
+static uint32_t curJobHeight = 0;
+static bool printingNow = false;
+static PendingDone pending;
+
+static const char* kHeaderKeys[] = {"Transfer-Encoding"};
 
 void begin() {
   baseUrl = String(SERVER_URL).substring(0, trimmedUrlLength(SERVER_URL));
@@ -31,13 +43,11 @@ void begin() {
 #else
   tls.setInsecure();
 #endif
-  http.setReuse(true);  // keep-alive で接続を使い回す
+  tls.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);  // 秒で指定（WiFiClientSecure.cpp で x1000）
+  http.setReuse(true);  // keep-alive で接続を使い回す（本文を読み切ったときだけ）
   http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
 }
-
-static bool ntpStarted = false;
-static uint32_t ntpStartedAt = 0;
 
 void reset() {
   http.end();
@@ -47,8 +57,8 @@ void reset() {
 
 // 証明書の検証の前に NTP で時刻を合わせる（取り決め: docs/api.md 5 と指示による）。
 // 注: この Arduino-ESP32 2.0.17 の sdkconfig.h には CONFIG_MBEDTLS_HAVE_TIME はあるが
-// CONFIG_MBEDTLS_HAVE_TIME_DATE が無く、証明書の有効期限の確認は組み込まれていないように見える
-// （grep の結果。実機では未確認）。それでも時刻合わせは行い、合うまではサーバーに接続しない。
+// CONFIG_MBEDTLS_HAVE_TIME_DATE が無く、証明書の有効期間（日付）は検証されていない可能性がある
+// （grep の結果。実機では未検証）。それでも時刻合わせは行い、合うまではサーバーに接続しない。
 // 待つ間もボタンと USB が動くよう、ここでは待たずに毎回の問い合わせで確かめる。
 bool ensureTime() {
   if (timeOk) return true;
@@ -70,8 +80,25 @@ bool ensureTime() {
   return false;
 }
 
+bool timeSynced() { return timeOk; }
+
+void setAutoClaim(bool on) { autoClaimOn = on; }
+bool autoClaim() { return autoClaimOn; }
+
 Health health() { return currentHealth; }
 int lastHttpCode() { return httpCode; }
+uint32_t jobId() { return curJobId; }
+uint32_t jobHeight() { return curJobHeight; }
+bool printing() { return printingNow; }
+
+bool pendingDone(uint32_t& job, bool& ok, String& error, uint32_t& attempts) {
+  if (!pending.active) return false;
+  job = pending.jobId;
+  ok = pending.ok;
+  error = pending.error;
+  attempts = pending.attempts;
+  return true;
+}
 
 const char* healthName(Health h) {
   switch (h) {
@@ -87,6 +114,7 @@ const char* healthName(Health h) {
 static bool beginRequest(const String& path) {
   if (!http.begin(tls, baseUrl + path)) return false;
   http.addHeader("Authorization", String("Bearer ") + PRINTER_TOKEN);
+  http.collectHeaders(kHeaderKeys, 1);
   return true;
 }
 
@@ -98,9 +126,39 @@ static void dropConnection() {
 
 static void noteCode(int code) {
   httpCode = code;
-  if (code == 200 || code == 204) currentHealth = Health::Ok;
+  if (code == 200 || code == 204 || code == 409) currentHealth = Health::Ok;
   else if (code == 401) currentHealth = Health::Unauthorized;
   else currentHealth = Health::Unreachable;
+}
+
+// 応答の本文を最後まで読む（Content-Length か chunked の終端まで）。
+// 読み切れたら true（接続を使い回してよい）。outLen には読めたところまでの長さが入る。
+static bool readBody(uint8_t* buf, size_t cap, size_t& outLen, String& err) {
+  outLen = 0;
+  BodyReader r;
+  const bool chunked = http.header("Transfer-Encoding").indexOf("chunked") >= 0;
+  const int size = http.getSize();
+  if (chunked) r.begin(BodyReader::Mode::Chunked, -1, buf, cap);
+  else if (size >= 0) r.begin(BodyReader::Mode::Length, size, buf, cap);
+  else { err = "no_length"; return false; }
+  WiFiClient* s = http.getStreamPtr();
+  if (!s) { err = "no_stream"; return false; }
+  uint32_t last = millis();
+  while (r.state() == BodyReader::State::More) {
+    const int c = s->available() > 0 ? s->read() : -1;
+    if (c >= 0) {
+      r.feed(static_cast<uint8_t>(c));
+      last = millis();
+      continue;
+    }
+    if (!s->connected() && s->available() <= 0) { err = "disconnected"; break; }
+    if (millis() - last > HTTP_TIMEOUT_MS) { err = "read_timeout"; break; }
+    led::tick();
+    delay(1);
+  }
+  outLen = r.size();
+  if (r.state() == BodyReader::State::Error) err = r.error();
+  return r.state() == BodyReader::State::Done;
 }
 
 // ---- rows ----
@@ -135,20 +193,19 @@ static bool readExact(WiFiClient* s, uint8_t* buf, size_t len, String& err) {
 }
 
 // 1 回ぶんの取得。retryable はやり直す意味があるか。
-static bool fetchRowsOnce(uint32_t jobId, uint32_t offset, uint16_t rows, uint8_t* buf,
+static bool fetchRowsOnce(uint32_t job, uint32_t offset, uint16_t rows, uint8_t* buf,
                           String& err, bool& retryable) {
   retryable = true;
   char path[96];
   snprintf(path, sizeof(path), "/api/printer/jobs/%lu/rows?offset=%lu&count=%u",
-           static_cast<unsigned long>(jobId), static_cast<unsigned long>(offset),
+           static_cast<unsigned long>(job), static_cast<unsigned long>(offset),
            static_cast<unsigned>(rows));
   if (!beginRequest(path)) { err = "rows_begin_failed"; return false; }
   const int code = http.GET();
   noteCode(code);
   if (code != 200) {
     err = code < 0 ? String("rows_conn_") + (-code) : String("rows_http_") + code;
-    // 400（範囲外）/ 401 / 404 / 409（printing でない）はやり直しても変わらない
-    if (code == 400 || code == 401 || code == 404 || code == 409) retryable = false;
+    retryable = rowsRetryable(code);
     dropConnection();
     return false;
   }
@@ -165,16 +222,22 @@ static bool fetchRowsOnce(uint32_t jobId, uint32_t offset, uint16_t rows, uint8_
     dropConnection();
     return false;
   }
-  http.end();  // 読み切ったので接続は残す（keep-alive）
+  http.end();  // Content-Length ちょうど読み切ったので接続は残す（keep-alive）
   return true;
 }
 
 static bool rowsReader(void* ctx, uint32_t offset, uint16_t rows, uint8_t* buf, String& err) {
   const JobCtx* job = static_cast<const JobCtx*>(ctx);
+  const uint32_t started = millis();
   for (int attempt = 0; attempt <= FETCH_RETRIES; ++attempt) {
     if (attempt > 0) {
-      Serial.printf("[rows] retry %d (%s)\n", attempt, err.c_str());
       const uint32_t wait = static_cast<uint32_t>(FETCH_RETRY_DELAY_MS) * attempt;
+      // やり直し全体の時間の上限
+      if (millis() - started + wait > FETCH_TOTAL_TIMEOUT_MS) {
+        err += "_gave_up";
+        return false;
+      }
+      Serial.printf("[rows] retry %d (%s)\n", attempt, err.c_str());
       const uint32_t start = millis();
       while (millis() - start < wait) { led::tick(); delay(10); }
     }
@@ -183,95 +246,118 @@ static bool rowsReader(void* ctx, uint32_t offset, uint16_t rows, uint8_t* buf, 
     if (WiFi.status() != WL_CONNECTED) { err = "wifi_lost"; continue; }
     if (fetchRowsOnce(job->jobId, offset, rows, buf, err, retryable)) return true;
     if (!retryable) return false;
+    if (millis() - started > FETCH_TOTAL_TIMEOUT_MS) {
+      err += "_gave_up";
+      return false;
+    }
   }
   return false;
 }
 
 // ---- done ----
-static bool postDone(uint32_t jobId, bool ok, const String& error) {
+static uint8_t doneBodyBuf[DONE_BODY_MAX];
+
+// 完了報告を 1 回送る。結果に応じて pending を消すか、次の送り直しを予約する。
+static void tryPostDone() {
+  if (!pending.active) return;
   char path[64];
-  snprintf(path, sizeof(path), "/api/printer/jobs/%lu/done", static_cast<unsigned long>(jobId));
+  snprintf(path, sizeof(path), "/api/printer/jobs/%lu/done",
+           static_cast<unsigned long>(pending.jobId));
   String body;
-  if (ok) {
+  if (pending.ok) {
     body = "{\"ok\":true}";
   } else {
-    char code[65];
-    sanitizeErrorCode(error.c_str(), code, sizeof(code), 64);
     char esc[140];
-    jsonEscape(code, esc, sizeof(esc));
+    jsonEscape(pending.error, esc, sizeof(esc));
     body = String("{\"ok\":false,\"error\":\"") + esc + "\"}";
   }
-  uint32_t wait = DONE_RETRY_DELAY_MS;
-  for (int attempt = 0; attempt <= DONE_RETRIES; ++attempt) {
-    if (attempt > 0) {
-      const uint32_t start = millis();
-      while (millis() - start < wait) { led::tick(); delay(10); }
-      wait *= 2;
-    }
-    if (WiFi.status() != WL_CONNECTED) continue;
-    if (!beginRequest(path)) continue;
+  int code = -1;
+  if (beginRequest(path)) {
     http.addHeader("Content-Type", "application/json");
-    const int code = http.POST(body);
-    Serial.printf("[done] job=%lu ok=%d http=%d\n", static_cast<unsigned long>(jobId), ok, code);
-    if (code == 200 || code == 409) {
-      // 409 も「受理済み」（docs/api.md: すでに終わっている印刷）
-      noteCode(200);
-      http.end();
-      return true;
-    }
+    code = http.POST(body);
     noteCode(code);
-    dropConnection();
+    String err;
+    size_t len = 0;
+    if (code > 0 && readBody(doneBodyBuf, sizeof(doneBodyBuf), len, err)) http.end();
+    else dropConnection();
   }
-  app::setLastError(String("done_not_delivered_job_") + jobId);
-  return false;
+  Serial.printf("[done] job=%lu ok=%d http=%d attempt=%lu\n",
+                static_cast<unsigned long>(pending.jobId), pending.ok, code,
+                static_cast<unsigned long>(pending.attempts + 1));
+  switch (classifyDoneCode(code)) {
+    case DoneOutcome::Accepted:
+      pending.clear();
+      break;
+    case DoneOutcome::Conflict:
+      // サーバー側ではすでに別の結果で終わっている。送り直しはやめるが、記録は残す
+      app::setLastError(String("done_conflict_job_") + pending.jobId);
+      pending.clear();
+      break;
+    case DoneOutcome::Retry:
+      pending.retryLater(millis(), POLL_INTERVAL_MS);
+      app::setLastError(String("done_pending_job_") + pending.jobId + "_http_" + code);
+      break;
+  }
 }
 
 // ---- claim ----
-bool pollOnce() {
-  if (!ensureTime()) return false;
+static char claimBuf[CLAIM_BODY_MAX + 1];
+
+static void claimAndPrint() {
   if (!beginRequest("/api/printer/claim")) {
     currentHealth = Health::Unreachable;
     app::setLastError("claim_begin_failed");
-    return false;
+    return;
   }
   // 本文なしの POST。HTTPClient は長さ 0 のとき Content-Length を付けないので自分で付ける
   http.addHeader("Content-Length", "0");
   const int code = http.POST(static_cast<uint8_t*>(nullptr), 0);
   noteCode(code);
   if (code == 204) {
-    http.end();
-    return false;
+    http.end();  // 204 は本文が無いので、そのまま使い回せる
+    return;
   }
   if (code != 200) {
     if (code == 401) app::setLastError("unauthorized");
     else app::setLastError(code < 0 ? String("claim_conn_") + (-code) + "_" + HTTPClient::errorToString(code)
                                     : String("claim_http_") + code);
-    dropConnection();
-    return false;
+    dropConnection();  // 本文は読まないので接続は閉じる
+    return;
   }
-  String json = http.getString();
-  http.end();
+  size_t len = 0;
+  String readErr;
+  const bool complete =
+      readBody(reinterpret_cast<uint8_t*>(claimBuf), CLAIM_BODY_MAX, len, readErr);
+  claimBuf[len] = '\0';
+  if (complete) http.end();
+  else dropConnection();
 
   ClaimInfo info{0, 0, 0};
-  if (!parseClaimJson(json.c_str(), info)) {
-    // jobId が読めないので done も送れない
-    app::setLastError("claim_bad_json");
+  ClaimCheck check = checkClaim(claimBuf, len, MAX_JOB_HEIGHT, info);
+  if (!complete && check == ClaimCheck::Ok) check = ClaimCheck::BadWithJob;  // 最後まで受け取れていない
+  if (check == ClaimCheck::BadNoJob) {
+    app::setLastError(String("claim_bad_no_job_") + (complete ? "json" : readErr));
     led::showFailure();
-    return true;
+    return;
+  }
+  curJobId = info.jobId;
+  curJobHeight = info.height;
+  if (check == ClaimCheck::BadWithJob) {
+    app::setLastError(String("bad_claim_job_") + info.jobId);
+    led::showFailure();
+    pending.set(info.jobId, false, "bad_claim", millis());
+    tryPostDone();
+    return;
   }
   Serial.printf("[job] id=%lu width=%lu height=%lu\n", static_cast<unsigned long>(info.jobId),
                 static_cast<unsigned long>(info.width), static_cast<unsigned long>(info.height));
-  if (info.width != kWidthDots || info.height == 0 || info.height > MAX_JOB_HEIGHT) {
-    app::setLastError("bad_job_size");
-    postDone(info.jobId, false, "bad_job_size");
-    led::showFailure();
-    return true;
-  }
 
   led::set(led::State::Printing);
+  printingNow = true;
   JobCtx ctx{info.jobId};
   String err;
   const bool ok = printer::printStream(info.height, FETCH_ROWS, rowsReader, &ctx, err);
+  printingNow = false;
   // 失敗しても、そこまで刷った分をちぎれるように紙を送る（先頭から刷り直さない）
   printer::feed();
   led::set(led::State::Idle);
@@ -279,8 +365,18 @@ bool pollOnce() {
     app::setLastError(String("job_") + info.jobId + "_" + err);
     led::showFailure();
   }
-  postDone(info.jobId, ok, ok ? String() : err);
-  return true;
+  pending.set(info.jobId, ok, ok ? "" : err.c_str(), millis());
+  tryPostDone();
+}
+
+void tick() {
+  if (!ensureTime()) return;
+  if (pending.active) {
+    // 未送信の完了報告がある間は claim しない
+    if (pending.due(millis())) tryPostDone();
+    return;
+  }
+  if (autoClaimOn) claimAndPrint();
 }
 
 }  // namespace server

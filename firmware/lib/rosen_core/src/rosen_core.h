@@ -100,6 +100,7 @@ enum class CmdType : uint8_t {
   BaudQuery,  // BAUD ?
   Paper,      // PAPER
   Print,      // PRINT <高さ>              arg = 高さ
+  Claim,      // CLAIM ON / CLAIM OFF      arg = 1 / 0
   Help,       // HELP
 };
 struct Command {
@@ -118,8 +119,87 @@ struct ClaimInfo {
   uint32_t height;
 };
 // POST /api/printer/claim の 200 応答 { "jobId": n, "width": 384, "height": n } を読む。
-// 3 つとも数値で見つかれば true。JSON ライブラリは使わない簡易な読み取り。
+// 3 つとも 0 以上の整数で見つかれば true。JSON ライブラリは使わない。
+// 次を確かめる: 先頭が { で、対応する } で閉じていて、その後ろは空白だけ。
+// キーは "..." で、値は数値・文字列・true/false/null・入れ子の {} [] のどれか（知らないキーは読み飛ばす）。
+// 数値は終端（, か } か空白）まで読めていること。小数・負数・指数は jobId/width/height には不可。
 bool parseClaimJson(const char* json, ClaimInfo& out);
+
+enum class ClaimCheck : uint8_t {
+  Ok,          // 印刷してよい
+  BadWithJob,  // jobId は読めたが内容が不正 → done に ok:false, error:"bad_claim"
+  BadNoJob,    // jobId も読めない → 報告できない。エラーを記録して次の周期へ
+};
+// claim の本文を検査する。len バイト（NUL 終端は不要）。
+// width == kWidthDots、1 <= height <= maxHeight を確かめる。
+// 全体の形が壊れていても、"jobId": <整数> が , } 空白 のどれかで終わっていれば jobId は読めたとみなす。
+ClaimCheck checkClaim(const char* body, size_t len, uint32_t maxHeight, ClaimInfo& out);
+
+// ---------------------------------------------------------------------------
+// HTTP の本文を 1 バイトずつ受け取り、終わりを判定する（Content-Length / chunked）。
+// buf が nullptr なら中身は捨てる（長さの上限も無し）。
+// ---------------------------------------------------------------------------
+class BodyReader {
+ public:
+  enum class Mode : uint8_t { Length, Chunked };
+  enum class State : uint8_t { More, Done, Error };
+  void begin(Mode mode, int32_t contentLength, uint8_t* buf, size_t cap);
+  State feed(uint8_t c);
+  State state() const { return state_; }
+  size_t size() const { return size_; }       // buf に入れたバイト数
+  const char* error() const { return error_; }
+
+ private:
+  enum class Ch : uint8_t { SizeHex, SizeExt, SizeLF, Data, DataCR, DataLF, TrailerStart, TrailerLine, EndLF };
+  State fail(const char* e) { state_ = State::Error; error_ = e; return state_; }
+  State store(uint8_t c);
+  Mode mode_ = Mode::Length;
+  State state_ = State::Error;
+  uint8_t* buf_ = nullptr;
+  size_t cap_ = 0;
+  size_t size_ = 0;
+  uint32_t remaining_ = 0;
+  Ch ch_ = Ch::SizeHex;
+  uint8_t hexDigits_ = 0;
+  const char* error_ = "";
+};
+
+// done の応答の扱い（docs/api.md 5）
+enum class DoneOutcome : uint8_t {
+  Accepted,  // 200: 受理
+  Conflict,  // 409: サーバー側ではすでに別の結果で終わっている（送り直しはやめる）
+  Retry,     // それ以外（通信失敗を含む）: 送り直す
+};
+DoneOutcome classifyDoneCode(int httpCode);
+
+// rows の失敗をやり直すか（400 範囲外 / 401 / 404 / 409 printing でない はやり直さない）
+bool rowsRetryable(int httpCode);
+
+// 送れていない完了報告（再起動で消える）
+struct PendingDone {
+  bool active = false;
+  uint32_t jobId = 0;
+  bool ok = false;
+  char error[65] = {0};   // sanitizeErrorCode 済み
+  uint32_t attempts = 0;
+  uint32_t nextAt = 0;    // millis()
+  void set(uint32_t job, bool okResult, const char* err, uint32_t now);
+  bool due(uint32_t now) const;
+  // 送れなかった: interval 後にもう一度
+  void retryLater(uint32_t now, uint32_t interval);
+  void clear() { active = false; }
+};
+
+// CTS（G19）が busy になった回数と累積時間（設定に関係なく、ピンを見て記録する）
+struct BusyStats {
+  uint32_t count = 0;
+  uint32_t totalMs = 0;
+  bool inBusy = false;
+  uint32_t since = 0;
+  void reset() { count = 0; totalMs = 0; inBusy = false; since = 0; }
+  void sample(bool busy, uint32_t now);
+  void finish(uint32_t now) { sample(false, now); }
+};
 
 // done の error 文字列を作る: 印字できる ASCII（0x21〜0x7E）以外は "_" に置き換え、
 // " と \ も "_" にし、最大 maxLen 文字（API の上限は 64）にする。戻り値は書いた文字数。

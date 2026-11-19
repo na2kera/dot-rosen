@@ -1,0 +1,209 @@
+// 会場コードの確認と印刷の申し込み（docs/api.md「4. 公開 API」「印刷の申し込み」）。
+import { Hono } from "hono";
+import { parseRouteData } from "../../shared/route/index.ts";
+import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
+import { APP_NAME, cardOptions, iso, jstDate, jstMonthDay } from "../lib/config.ts";
+import { safeEqual } from "../lib/crypto.ts";
+import {
+  ApiError,
+  asRecord,
+  CLIENT_TOKEN_RE,
+  clientIp,
+  conflict,
+  EDIT_KEY_RE,
+  EVENT_CODE_RE,
+  jobIdParam,
+  notFound,
+  readJson,
+  ROUTE_ID_RE,
+  str,
+} from "../lib/http.ts";
+import { jobProgress, MAX_QUEUED, sweepOrphansStatement } from "../lib/jobs.ts";
+import { checkFailures, recordFailure } from "../lib/rate-limit.ts";
+import { readSettings } from "../lib/settings.ts";
+import type { AppEnv, Db, Deps } from "../lib/types.ts";
+import { checkOwner, loadRoute } from "./routes.ts";
+
+/** 会場コードを確かめる。違えば失敗を数えて 403 */
+async function checkEventCode(db: Db, code: string, ip: string, now: Date): Promise<{ eventCode: string; accepting: boolean }> {
+  const s = await readSettings(db);
+  if (s.eventCode === null || !(await safeEqual(code, s.eventCode))) {
+    await recordFailure(db, "code", ip, now);
+    throw new ApiError(403, "invalid_code");
+  }
+  return { eventCode: s.eventCode, accepting: s.accepting };
+}
+
+async function existingJob(db: Db, clientId: string, requestId: string) {
+  return db
+    .prepare("SELECT id, route_id FROM print_jobs WHERE client_id = ?1 AND request_id = ?2")
+    .bind(clientId, requestId)
+    .first<{ id: number; route_id: string }>();
+}
+
+async function progressResponse(db: Db, jobId: number) {
+  const p = await jobProgress(db, jobId);
+  if (!p) throw new Error("印刷が見つかりません");
+  return { jobId, issueNo: p.issueNo, ahead: p.ahead, status: p.status };
+}
+
+/**
+ * 発行番号の採番、条件の確認、待ちへの追加を1つの batch で行う。
+ * 1. 条件（受付中・会場コード・待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、
+ *    sort_key = NULL（この batch で作った印）で追加する。発行番号は issue_counter + 1。
+ * 2. 1 で追加した行（sort_key IS NULL）があるときだけ issue_counter を 1 増やす。
+ * 3. その行の sort_key を id にして返す。
+ */
+function enqueueStatements(db: Db, p: { routeId: string; clientId: string; requestId: string; eventCode: string; snapshot: string; now: string }) {
+  return [
+    db
+      .prepare(
+        `INSERT INTO print_jobs (route_id, client_id, request_id, event_code, status, issue_no, sort_key, snapshot, created_at)
+         SELECT ?1, ?2, ?3, ?4, 'queued', CAST(s.value AS INTEGER) + 1, NULL, ?5, ?6
+         FROM settings s
+         WHERE s.key = 'issue_counter'
+           AND (SELECT value FROM settings WHERE key = 'accepting') = '1'
+           AND (SELECT value FROM settings WHERE key = 'event_code') = ?4
+           AND (SELECT COUNT(*) FROM print_jobs WHERE status = 'queued') < ?7
+           AND (SELECT COUNT(*) FROM print_jobs
+                WHERE client_id = ?2 AND event_code = ?4 AND reprint_of IS NULL AND status NOT IN ('canceled', 'failed'))
+               < 1 + COALESCE((SELECT extra FROM print_grants WHERE client_id = ?2 AND event_code = ?4), 0)
+         ON CONFLICT (client_id, request_id) DO NOTHING`,
+      )
+      .bind(p.routeId, p.clientId, p.requestId, p.eventCode, p.snapshot, p.now, MAX_QUEUED),
+    db
+      .prepare(
+        `UPDATE settings SET value = CAST(value AS INTEGER) + 1
+         WHERE key = 'issue_counter'
+           AND EXISTS (SELECT 1 FROM print_jobs WHERE client_id = ?1 AND request_id = ?2 AND sort_key IS NULL)`,
+      )
+      .bind(p.clientId, p.requestId),
+    db
+      .prepare("UPDATE print_jobs SET sort_key = id WHERE client_id = ?1 AND request_id = ?2 AND sort_key IS NULL RETURNING id, issue_no")
+      .bind(p.clientId, p.requestId),
+  ];
+}
+
+/** 追加できなかった理由を、確かめる順に調べる */
+async function rejectReason(db: Db, clientId: string, eventCode: string): Promise<ApiError> {
+  const s = await readSettings(db);
+  if (s.eventCode !== eventCode) return new ApiError(403, "invalid_code");
+  if (!s.accepting) return new ApiError(409, "not_accepting");
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM print_jobs WHERE status = 'queued') AS queued,
+         (SELECT COUNT(*) FROM print_jobs
+          WHERE client_id = ?1 AND event_code = ?2 AND reprint_of IS NULL AND status NOT IN ('canceled', 'failed')) AS used,
+         1 + COALESCE((SELECT extra FROM print_grants WHERE client_id = ?1 AND event_code = ?2), 0) AS allowed`,
+    )
+    .bind(clientId, eventCode)
+    .first<{ queued: number; used: number; allowed: number }>();
+  if (row && row.queued >= MAX_QUEUED) return new ApiError(409, "queue_full");
+  if (row && row.used >= row.allowed) return new ApiError(409, "limit_reached");
+  return conflict();
+}
+
+export function printApi(deps: Deps) {
+  const app = new Hono<AppEnv>();
+
+  app.get("/event", async (c) => {
+    const db = c.env.DB;
+    const now = deps.now();
+    const ip = clientIp(c);
+    await checkFailures(db, "code", ip, now);
+    const code = c.req.query("code") ?? "";
+    const s = await readSettings(db);
+    const valid = EVENT_CODE_RE.test(code) && s.eventCode !== null && (await safeEqual(code, s.eventCode));
+    if (!valid) await recordFailure(db, "code", ip, now);
+    return c.json({ valid, accepting: s.accepting });
+  });
+
+  app.post("/print", async (c) => {
+    const db = c.env.DB;
+    const now = deps.now();
+    const ip = clientIp(c);
+    const body = asRecord(await readJson(c));
+    const routeId = str(body.routeId, ROUTE_ID_RE);
+    const editKey = str(body.editKey, EDIT_KEY_RE);
+    const code = str(body.eventCode, EVENT_CODE_RE);
+    const clientId = str(body.clientId, CLIENT_TOKEN_RE);
+    const requestId = str(body.requestId, CLIENT_TOKEN_RE);
+
+    // 回数制限 → 会場コード
+    await checkFailures(db, "code", ip, now);
+    const { eventCode, accepting } = await checkEventCode(db, code, ip, now);
+
+    // 同じ (clientId, requestId) の再送なら元の印刷を返す
+    const prev = await existingJob(db, clientId, requestId);
+    if (prev) {
+      if (prev.route_id !== routeId) throw conflict();
+      return c.json(await progressResponse(db, prev.id));
+    }
+
+    // 受付中か → 路線（期限内・非公開でない・鍵が合う）
+    if (!accepting) throw new ApiError(409, "not_accepting");
+    const route = await checkOwner(await loadRoute(db, routeId), editKey, now);
+    const parsed = parseRouteData(JSON.parse(route.data), deps.resources.lookup);
+    if (!parsed.ok) throw new Error(`保存済みの路線データが検査に通りません: ${parsed.error}`);
+
+    const opts = cardOptions(c.env);
+    const snapshot: CardSnapshot = {
+      route: parsed.value,
+      issuedOn: jstDate(now),
+      expiresOn: jstMonthDay(new Date(route.expires_at)),
+      url: `${new URL(c.req.url).origin}/r/${routeId}`,
+      appName: APP_NAME,
+      monoSet: opts.monoSet,
+      sideLayout: opts.sideLayout,
+    };
+
+    // 待ちの上限・回数上限の判定、発行番号、追加を1つの batch で
+    const results = await db.batch<{ id: number; issue_no: number }>([
+      sweepOrphansStatement(db, now),
+      ...enqueueStatements(db, { routeId, clientId, requestId, eventCode, snapshot: JSON.stringify(snapshot), now: iso(now) }),
+    ]);
+    const created = results[results.length - 1].results[0];
+    if (!created) {
+      // 同時に届いた同じ申し込みに先を越された
+      const again = await existingJob(db, clientId, requestId);
+      if (again) {
+        if (again.route_id !== routeId) throw conflict();
+        return c.json(await progressResponse(db, again.id));
+      }
+      throw await rejectReason(db, clientId, eventCode);
+    }
+
+    // 発行番号が決まったので画像を組み立てる。失敗したら印刷を消し、回数を消費しない
+    let card;
+    try {
+      card = (deps.buildCard ?? buildCardRaster)(snapshot, created.issue_no, deps.resources);
+    } catch (e) {
+      console.error("路線カードの組み立てに失敗", { jobId: created.id, routeId, message: e instanceof Error ? e.message : String(e) });
+      await db.batch([
+        db.prepare("DELETE FROM print_jobs WHERE id = ?1 AND raster IS NULL").bind(created.id),
+        // 後から別の番号が出ていなければ、番号を戻す
+        db
+          .prepare("UPDATE settings SET value = CAST(value AS INTEGER) - 1 WHERE key = 'issue_counter' AND CAST(value AS INTEGER) = ?1")
+          .bind(created.issue_no),
+      ]);
+      throw new ApiError(500, "internal");
+    }
+    await db
+      .prepare("UPDATE print_jobs SET raster = ?1, height = ?2 WHERE id = ?3 AND raster IS NULL AND status = 'queued'")
+      .bind(card.raster, card.height, created.id)
+      .run();
+    return c.json(await progressResponse(db, created.id));
+  });
+
+  app.get("/print/:jobId", async (c) => {
+    const jobId = jobIdParam(c.req.param("jobId"));
+    const clientId = c.req.query("clientId") ?? "";
+    if (!CLIENT_TOKEN_RE.test(clientId)) throw notFound();
+    const p = await jobProgress(c.env.DB, jobId, clientId);
+    if (!p) throw notFound();
+    return c.json({ status: p.status, ahead: p.ahead, issueNo: p.issueNo });
+  });
+
+  return app;
+}

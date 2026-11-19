@@ -17,6 +17,11 @@
     "font:build": "node tools/run.mjs tools/build-font.ts",
     "sprites:sheet": "node tools/run.mjs tools/sprites-sheet.ts",
     "sprites:bench": "node tools/run.mjs tools/bench-sprites.ts",
+    "card:sheet": "node tools/run.mjs tools/card-sheet.ts",
+    "card:bench": "node tools/run.mjs tools/bench-card.ts",
+    "print:bench": "node tools/run.mjs tools/bench-print.ts",
+    "printer:fake": "node tools/run.mjs tools/fake-printer.ts",
+    "raster:png": "node tools/run.mjs tools/raster-to-png.ts",
     "cf:typegen": "wrangler types"
   },
   "dependencies": {

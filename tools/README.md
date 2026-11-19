@@ -8,6 +8,22 @@
 | `pnpm font:build` | `tools/build-font.ts`。点データのフォントと woff2 を `public/fonts/` に作り直す（駅名の文字を使うので `data:build` の後に実行） |
 | `pnpm sprites:sheet` | `tools/sprites-sheet.ts`。電車のパーツの確認用一覧を `tools/out/sprites/` に出す（拡大ページは `review/`） |
 | `pnpm sprites:bench` | `tools/bench-sprites.ts`。顔1つ・側面2両・白黒変換の時間を、新しいプロセスで 7 回測る |
+| `pnpm print:bench` | `tools/bench-print.ts`。`POST /api/print` の計算（本文の検査、路線データの検査、カードの描画、生データ）の時間を、新しいプロセスで 7 回測る |
+| `pnpm printer:fake` | `tools/fake-printer.ts`。プリンタの代わりに claim → rows → done を回し、受け取った画像を `tools/out/printed/` に PNG（と生データ .bin）で保存する。`PRINTER_TOKEN=... pnpm printer:fake --url http://127.0.0.1:5182 --once`。`--fail <理由>` で失敗の報告、`--no-done` で報告しない |
+| `pnpm raster:png` | `tools/raster-to-png.ts`。プリンタ用の生データ（48 × 高さ バイト）を PNG にする。`pnpm raster:png <入力.bin> [出力.png] [--scale 2]` |
+
+### サーバーの確認用の開発サーバー
+
+ほかの開発サーバーとローカルの D1（`.wrangler/`）を取り合わないよう、`tools/dev-api.vite.config.ts` で D1 の置き場所を一時ディレクトリにして起動する。
+
+```sh
+S=$(mktemp -d)
+volta run --node 22.23.2 pnpm exec wrangler d1 migrations apply dot-rosen --local --persist-to $S
+DOT_ROSEN_STATE=$S DEV_ADMIN_PASSWORD=dev-admin DEV_PRINTER_TOKEN=dev-printer DEV_SESSION_SECRET=dev-session-secret \
+  pnpm dev --port 5182 --strictPort --config tools/dev-api.vite.config.ts
+# 別の端末で: PRINTER_TOKEN=dev-printer pnpm printer:fake --url http://127.0.0.1:5182
+# 定期実行（掃除）を呼ぶ: curl "http://127.0.0.1:5182/cdn-cgi/handler/scheduled?cron=0+18+*+*+*"
+```
 
 生成物（`public/data/`、`public/fonts/`）はコミットする。元データ（`data-src/`）と確認用の出力（`tools/out/`）はコミットしない。
 

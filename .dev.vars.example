@@ -1,0 +1,5 @@
+# ローカル開発用の秘密の値。このファイルを .dev.vars に写して値を入れる（.dev.vars はコミットしない）。
+# 本番は `wrangler secret put <名前>` で入れる。
+ADMIN_PASSWORD=change-me
+PRINTER_TOKEN=change-me
+SESSION_SECRET=change-me-to-a-long-random-string

@@ -1,0 +1,236 @@
+// 管理 API（docs/api.md「6. 管理 API」）。
+import { Hono, type Context } from "hono";
+import { createMiddleware } from "hono/factory";
+import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
+import { iso } from "../lib/config.ts";
+import { hmacHex, newEventCode, newToken, safeEqual } from "../lib/crypto.ts";
+import { ApiError, asRecord, CLIENT_TOKEN_RE, clientIp, conflict, invalid, jobIdParam, notFound, readJson, ROUTE_ID_RE } from "../lib/http.ts";
+import { sweepOrphansStatement, sweepTimeoutsStatement, type JobStatus } from "../lib/jobs.ts";
+import { checkFailures, recordFailure } from "../lib/rate-limit.ts";
+import { ensureEventCode, readSettings } from "../lib/settings.ts";
+import type { AppEnv, Deps } from "../lib/types.ts";
+
+export const SESSION_COOKIE = "dr_admin";
+/** 管理 Cookie の有効時間（12時間） */
+export const SESSION_MS = 12 * 60 * 60 * 1000;
+const MAX_PASSWORD_LENGTH = 256;
+
+function secrets(c: Context<AppEnv>): { password: string; sessionSecret: string } {
+  const password = c.env.ADMIN_PASSWORD;
+  const sessionSecret = c.env.SESSION_SECRET;
+  if (!password || !sessionSecret) {
+    console.error("ADMIN_PASSWORD か SESSION_SECRET が設定されていません");
+    throw new ApiError(500, "internal");
+  }
+  return { password, sessionSecret };
+}
+
+async function sessionValue(secret: string, expMs: number): Promise<string> {
+  return `${expMs}.${await hmacHex(secret, `admin-session:${expMs}`)}`;
+}
+
+function readCookie(c: Context<AppEnv>, name: string): string | null {
+  const header = c.req.header("Cookie") ?? "";
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+function setSessionCookie(c: Context<AppEnv>, value: string, maxAgeSec: number) {
+  c.header("Set-Cookie", `${SESSION_COOKIE}=${value}; Max-Age=${maxAgeSec}; Path=/api/admin; HttpOnly; Secure; SameSite=Strict`);
+}
+
+/** 状態を変える管理 API: Origin が自分のオリジンと一致し、Content-Type が JSON であること */
+const sameOriginJson = createMiddleware<AppEnv>(async (c, next) => {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    const origin = c.req.header("Origin");
+    if (!origin || origin !== new URL(c.req.url).origin) throw new ApiError(403, "forbidden");
+    if (!/^application\/json\s*(;|$)/i.test(c.req.header("Content-Type") ?? "")) throw invalid();
+  }
+  await next();
+});
+
+export function adminApi(deps: Deps) {
+  const app = new Hono<AppEnv>();
+  app.use("/admin/*", sameOriginJson);
+
+  // ログイン以外は Cookie が必須
+  app.use("/admin/*", async (c, next) => {
+    if (c.req.path === "/api/admin/login") return next();
+    const { sessionSecret } = secrets(c);
+    const v = readCookie(c, SESSION_COOKIE);
+    const m = v ? /^(\d{1,16})\.([0-9a-f]{64})$/.exec(v) : null;
+    if (!m) throw new ApiError(401, "unauthorized");
+    const exp = Number(m[1]);
+    const now = deps.now().getTime();
+    if (!(exp > now && exp <= now + SESSION_MS)) throw new ApiError(401, "unauthorized");
+    if (!(await safeEqual(v!, await sessionValue(sessionSecret, exp)))) throw new ApiError(401, "unauthorized");
+    await next();
+  });
+
+  app.post("/admin/login", async (c) => {
+    const db = c.env.DB;
+    const now = deps.now();
+    const ip = clientIp(c);
+    const { password, sessionSecret } = secrets(c);
+    await checkFailures(db, "login", ip, now);
+    const body = asRecord(await readJson(c));
+    const given = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
+    if (!(await safeEqual(given, password))) {
+      await recordFailure(db, "login", ip, now);
+      throw new ApiError(401, "unauthorized");
+    }
+    const exp = now.getTime() + SESSION_MS;
+    setSessionCookie(c, await sessionValue(sessionSecret, exp), SESSION_MS / 1000);
+    return c.json({ ok: true, expiresAt: iso(new Date(exp)) });
+  });
+
+  app.post("/admin/logout", (c) => {
+    setSessionCookie(c, "", 0);
+    return c.json({ ok: true });
+  });
+
+  app.get("/admin/state", async (c) => {
+    const db = c.env.DB;
+    const now = deps.now();
+    await db.batch([sweepTimeoutsStatement(db, now), sweepOrphansStatement(db, now)]);
+    const eventCode = await ensureEventCode(db);
+    const [s, jobs, counts] = await Promise.all([
+      readSettings(db),
+      db
+        .prepare(
+          `SELECT id, route_id AS routeId, json_extract(snapshot, '$.route.name') AS routeName, client_id AS clientId,
+             status, issue_no AS issueNo, created_at AS createdAt, claimed_at AS claimedAt, finished_at AS finishedAt,
+             error, reprint_of AS reprintOf
+           FROM print_jobs ORDER BY id DESC LIMIT 100`,
+        )
+        .all(),
+      db.prepare("SELECT status, COUNT(*) AS n FROM print_jobs GROUP BY status").all<{ status: JobStatus; n: number }>(),
+    ]);
+    const countMap: Record<JobStatus, number> = { queued: 0, printing: 0, done: 0, failed: 0, canceled: 0 };
+    for (const r of counts.results) countMap[r.status] = r.n;
+    return c.json({
+      accepting: s.accepting,
+      eventCode,
+      printer: { lastSeenAt: s.printerLastSeen },
+      jobs: jobs.results,
+      counts: countMap,
+    });
+  });
+
+  app.post("/admin/jobs/:id/cancel", async (c) => {
+    const db = c.env.DB;
+    const id = jobIdParam(c.req.param("id"));
+    const row = await db
+      .prepare("UPDATE print_jobs SET status = 'canceled', finished_at = ?1, raster = NULL WHERE id = ?2 AND status = 'queued' RETURNING id")
+      .bind(iso(deps.now()), id)
+      .first();
+    if (row) return c.json({ ok: true });
+    const exists = await db.prepare("SELECT 1 AS x FROM print_jobs WHERE id = ?1").bind(id).first();
+    throw exists ? conflict() : notFound();
+  });
+
+  app.post("/admin/jobs/:id/reprint", async (c) => {
+    const db = c.env.DB;
+    const now = deps.now();
+    const id = jobIdParam(c.req.param("id"));
+    const src = await db
+      .prepare(
+        `SELECT j.status, j.issue_no, j.snapshot, j.route_id, r.hidden AS route_hidden, r.id AS route_exists
+         FROM print_jobs j LEFT JOIN routes r ON r.id = j.route_id WHERE j.id = ?1`,
+      )
+      .bind(id)
+      .first<{ status: JobStatus; issue_no: number; snapshot: string; route_id: string; route_hidden: number | null; route_exists: string | null }>();
+    if (!src) throw notFound();
+    // 終わった印刷（done・failed）だけ。路線が消えた・非公開のものは刷らない
+    if (src.status !== "done" && src.status !== "failed") throw conflict();
+    if (src.route_exists === null || src.route_hidden) throw conflict();
+    let card;
+    try {
+      card = (deps.buildCard ?? buildCardRaster)(JSON.parse(src.snapshot) as CardSnapshot, src.issue_no, deps.resources);
+    } catch (e) {
+      console.error("再印刷の組み立てに失敗", { jobId: id, message: e instanceof Error ? e.message : String(e) });
+      throw new ApiError(500, "internal");
+    }
+    // 元の snapshot と発行番号で、待ちの先頭（いまの先頭より小さい sort_key）に入れる
+    const row = await db
+      .prepare(
+        `INSERT INTO print_jobs (route_id, client_id, request_id, event_code, status, issue_no, sort_key, snapshot, raster, height, created_at, reprint_of)
+         SELECT route_id, client_id, ?1, event_code, 'queued', issue_no,
+           COALESCE((SELECT MIN(sort_key) FROM print_jobs WHERE status = 'queued'), 0) - 1,
+           snapshot, ?2, ?3, ?4, id
+         FROM print_jobs WHERE id = ?5
+         RETURNING id, issue_no`,
+      )
+      .bind(`reprint-${newToken()}`, card.raster, card.height, iso(now), id)
+      .first<{ id: number; issue_no: number }>();
+    if (!row) throw notFound();
+    return c.json({ jobId: row.id, issueNo: row.issue_no });
+  });
+
+  app.post("/admin/clients/:clientId/grant", async (c) => {
+    const db = c.env.DB;
+    const clientId = c.req.param("clientId");
+    if (!CLIENT_TOKEN_RE.test(clientId)) throw invalid();
+    const eventCode = await ensureEventCode(db);
+    const row = await db
+      .prepare(
+        `INSERT INTO print_grants (client_id, event_code, extra) VALUES (?1, ?2, 1)
+         ON CONFLICT (client_id, event_code) DO UPDATE SET extra = extra + 1 RETURNING extra`,
+      )
+      .bind(clientId, eventCode)
+      .first<{ extra: number }>();
+    return c.json({ ok: true, extra: row?.extra ?? 1 });
+  });
+
+  app.post("/admin/accepting", async (c) => {
+    const body = asRecord(await readJson(c));
+    if (typeof body.accepting !== "boolean") throw invalid();
+    await c.env.DB.prepare("UPDATE settings SET value = ?1 WHERE key = 'accepting'").bind(body.accepting ? "1" : "0").run();
+    return c.json({ ok: true, accepting: body.accepting });
+  });
+
+  app.post("/admin/event-code/regenerate", async (c) => {
+    const eventCode = newEventCode();
+    await c.env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('event_code', ?1) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )
+      .bind(eventCode)
+      .run();
+    return c.json({ eventCode });
+  });
+
+  app.get("/admin/routes", async (c) => {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, json_extract(data, '$.name') AS name, created_at AS createdAt, expires_at AS expiresAt, hidden
+       FROM routes ORDER BY created_at DESC LIMIT 100`,
+    ).all<{ id: string; name: string; createdAt: string; expiresAt: string; hidden: number }>();
+    return c.json({ routes: results.map((r) => ({ ...r, hidden: r.hidden === 1 })) });
+  });
+
+  app.post("/admin/routes/:id/hide", async (c) => {
+    const db = c.env.DB;
+    const id = c.req.param("id");
+    if (!ROUTE_ID_RE.test(id)) throw notFound();
+    const body = asRecord(await readJson(c));
+    if (typeof body.hidden !== "boolean") throw invalid();
+    const hidden = body.hidden ? 1 : 0;
+    // 非公開にするのと、その路線の待ちの印刷の取り消しを1つの batch で
+    const results = await db.batch<{ id: unknown }>([
+      db.prepare("UPDATE routes SET hidden = ?1 WHERE id = ?2 RETURNING id").bind(hidden, id),
+      db
+        .prepare(
+          `UPDATE print_jobs SET status = 'canceled', finished_at = ?1, raster = NULL
+           WHERE route_id = ?2 AND status = 'queued' AND ?3 = 1 RETURNING id`,
+        )
+        .bind(iso(deps.now()), id, hidden),
+    ]);
+    if (!results[0].results[0]) throw notFound();
+    return c.json({ ok: true, hidden: body.hidden, canceled: results[1].results.length });
+  });
+
+  return app;
+}

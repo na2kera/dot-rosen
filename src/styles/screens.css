@@ -300,3 +300,447 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- 電車をつくる ---- */
+.train {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.train__preview {
+  flex: none;
+  padding: 8px 0 4px;
+  background: var(--c-panel);
+}
+
+.train__top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 0 var(--pad);
+}
+
+.train__face {
+  flex: none;
+  display: grid;
+  place-items: end center;
+  width: 136px;
+  min-height: 152px;
+}
+
+.train__face[data-pop="true"] {
+  animation: pop-in 200ms var(--steps);
+}
+
+.train__tools {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+.train__tools .btn {
+  width: 100%;
+}
+
+.train__dice {
+  min-height: 56px;
+}
+
+.train__dice[data-rolling] .picon {
+  animation: dice-roll 360ms steps(4, end);
+}
+
+.train__dice[data-rolling="1"] .picon {
+  animation-name: dice-roll-b;
+}
+
+@keyframes dice-roll {
+  0% { transform: rotate(0); }
+  50% { transform: rotate(180deg) scale(1.3); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes dice-roll-b {
+  0% { transform: rotate(0); }
+  50% { transform: rotate(-180deg) scale(1.3); }
+  100% { transform: rotate(-360deg); }
+}
+
+.train__consist {
+  margin-top: 0;
+  padding: 0 var(--pad) 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.train__consist canvas {
+  display: block;
+}
+
+.train__cars-note {
+  padding: 0 var(--pad);
+}
+
+.train__preview[data-mono="true"] .train__face,
+.train__preview[data-mono="true"] .train__consist canvas {
+  outline: var(--line) solid var(--c-weak);
+}
+
+.train__options {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px var(--pad) calc(var(--pad) * 2);
+}
+
+.opt {
+  padding-top: 12px;
+}
+
+.opt + .opt {
+  margin-top: 4px;
+}
+
+.opt__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding-left: 8px;
+  border-left: 6px solid var(--c-ink);
+}
+
+.opt__value {
+  color: var(--c-ink-weak);
+}
+
+.opt__note {
+  margin-top: 8px;
+}
+
+.thumbs {
+  padding: 2px var(--shadow) var(--shadow) 2px;
+}
+
+.thumbs--face {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.thumbs--face .thumb__label {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  white-space: normal;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* 側面は横に長いので、横にスクロールして選ぶ */
+.thumbs--side {
+  display: flex;
+  gap: 10px;
+  margin: 0 calc(var(--pad) * -1);
+  padding: 2px calc(var(--pad) + var(--shadow)) calc(var(--shadow) + 4px) var(--pad);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scroll-padding: 0 var(--pad);
+}
+
+.thumbs--side .thumb {
+  flex: none;
+  scroll-snap-align: start;
+}
+
+.cars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 8px var(--shadow) var(--shadow) 0;
+}
+
+.cars .btn {
+  width: 64px;
+  height: 64px;
+}
+
+.cars__value {
+  min-width: 96px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.cars__unit {
+  font-size: var(--fs);
+  margin-left: 4px;
+}
+
+/* ロゴ */
+.logo-ed__tools .btn-group {
+  display: flex;
+}
+
+.logo-ed__tool {
+  flex: 1;
+  gap: 4px;
+  padding: 8px 4px;
+}
+
+.logo-ed__tool[aria-checked="true"] {
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+.logo-ed__stage {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.logo-ed__canvas {
+  display: block;
+  border: var(--line) solid var(--c-ink);
+  box-sizing: content-box;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  cursor: crosshair;
+}
+
+.logo-ed__actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+.logo-ed__note {
+  margin-top: 8px;
+  text-align: center;
+}
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+  padding: 2px var(--shadow) var(--shadow) 2px;
+}
+
+/* ---- できあがり ---- */
+.finish {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.finish__card {
+  flex: none;
+  height: 46%;
+  display: flex;
+  flex-direction: column;
+  border-bottom: var(--line) solid var(--c-ink);
+}
+
+.finish__invalid {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  padding: var(--pad);
+}
+
+.finish__actions {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--pad) calc(var(--pad) + var(--shadow)) calc(var(--pad) * 2) var(--pad);
+}
+
+.cardview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.cardview .tabs {
+  border-top: 0;
+}
+
+.cardview__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 0 16px;
+  background: var(--c-weak);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' shape-rendering='crispEdges'%3E%3Crect width='2' height='2' fill='%23a89d84'/%3E%3C/svg%3E");
+}
+
+.cardview__scroll canvas {
+  flex: none;
+  margin: 0 auto;
+  display: block;
+  box-shadow: var(--shadow) var(--shadow) 0 var(--c-ink);
+}
+
+.cardview__msg {
+  padding: var(--pad);
+  background: var(--c-panel);
+}
+
+.save,
+.print {
+  display: grid;
+  gap: 12px;
+}
+
+.print {
+  display: block;
+}
+
+.print > * + * {
+  margin-top: 12px;
+}
+
+.save__url-input {
+  font-size: var(--fs);
+}
+
+.save__share {
+  display: flex;
+  gap: 12px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+.save__note {
+  color: var(--c-ink-weak);
+}
+
+.save__dirty {
+  padding: 4px 8px;
+  border: var(--line) solid var(--c-alert);
+  color: var(--c-alert);
+}
+
+.save__link {
+  color: inherit;
+}
+
+.expiry strong {
+  font-weight: normal;
+  padding: 0 4px;
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+.image-saver {
+  display: grid;
+  gap: 8px;
+  padding-right: var(--shadow);
+}
+
+.image-saver__hint {
+  margin-bottom: 12px;
+}
+
+.image-saver__img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: var(--line) solid var(--c-ink);
+  -webkit-touch-callout: default;
+}
+
+.print__row {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.print__note {
+  margin-top: 8px;
+}
+
+.pstatus {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-board);
+  color: var(--c-board-ink);
+}
+
+.pstatus__no strong {
+  font-weight: normal;
+  margin-left: 8px;
+}
+
+.pstatus__main {
+  color: var(--c-board-sub);
+}
+
+.pstatus[data-status="failed"] .pstatus__main,
+.pstatus[data-status="canceled"] .pstatus__main {
+  color: var(--c-board-alert);
+}
+
+.pstatus__blink {
+  animation: blink-text 1s steps(1, end) infinite;
+}
+
+@keyframes blink-text {
+  50% {
+    color: var(--c-board-ink);
+  }
+}
+
+/* ---- 路線のページ ---- */
+.route-page {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.route-page__expiry,
+.route-page__actions {
+  padding: 0 var(--pad);
+}
+
+.route-page__expiry {
+  margin-bottom: 12px;
+}
+
+.route-page__card .cardview__scroll {
+  /* 縦はページごとスクロールし、横にはみ出すときだけカードの中で横にスクロールする */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.route-page__actions {
+  display: grid;
+  gap: 12px;
+  margin-top: var(--pad);
+  padding-right: calc(var(--pad) + var(--shadow));
+}
+
+.route-page__actions .image-saver {
+  padding-right: 0;
+}

@@ -353,39 +353,41 @@
   gap: var(--gap);
   height: var(--board-h);
   padding: 0 12px;
-  background-color: var(--c-board);
-  /* 消えている LED の点 */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='2' height='2' shape-rendering='crispEdges'%3E%3Crect width='1' height='1' fill='%231f232b'/%3E%3C/svg%3E");
-  background-size: 2px 2px;
+  /* 消えている LED（格子のすき間が点に見える） */
+  background-color: var(--c-board-led-off);
   border-bottom: var(--line) solid var(--c-ink);
   color: var(--c-board-ink);
   overflow: hidden;
   white-space: nowrap;
 }
 
-/* 文字の上に格子を重ねて、光る点の集まりに見せる */
+/* 消えている LED の格子（文字の下に敷き、文字は読みやすいまま光らせる） */
 .board::after {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' shape-rendering='crispEdges'%3E%3Crect x='3' width='1' height='4' fill='%2314161c'/%3E%3Crect y='3' width='4' height='1' fill='%2314161c'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' shape-rendering='crispEdges'%3E%3Crect x='3' width='1' height='4' fill='%230c0d11'/%3E%3Crect y='3' width='4' height='1' fill='%230c0d11'/%3E%3C/svg%3E");
   background-size: 4px 4px;
 }
 
 .board__title {
+  position: relative;
+  z-index: 1;
   font-size: var(--fs-l);
   line-height: var(--lh-l);
-  text-shadow: 0 0 6px var(--c-board-ink);
+  text-shadow: 0 0 4px var(--c-board-ink);
   overflow: hidden;
   text-overflow: clip;
 }
 
 .board__sub {
+  position: relative;
+  z-index: 1;
   font-size: var(--fs-l);
   line-height: var(--lh-l);
   color: var(--c-board-sub);
-  text-shadow: 0 0 6px var(--c-board-sub);
+  text-shadow: 0 0 4px var(--c-board-sub);
 }
 
 /* ---- 下部のステップの切り替え ---- */
@@ -479,4 +481,134 @@
   display: grid;
   gap: var(--pad);
   justify-items: start;
+}
+
+/* ---- タブ ---- */
+.tabs {
+  display: flex;
+  border-top: var(--line) solid var(--c-ink);
+  border-bottom: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+}
+
+.tabs__btn {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 4px 2px;
+  border: 0;
+  border-left: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: var(--c-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+
+.tabs__btn:first-child {
+  border-left: 0;
+}
+
+.tabs__btn[aria-selected="true"] {
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+/* ---- チェックの切り替え ---- */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.toggle__box {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: transparent;
+}
+
+.toggle input:checked + .toggle__box {
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+.toggle input:focus-visible + .toggle__box {
+  outline: var(--line) dashed var(--c-ink);
+  outline-offset: 2px;
+}
+
+/* ---- 小さな絵つきの候補 ---- */
+.thumb {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 4px 4px;
+  border: var(--line) solid var(--c-weak);
+  background: var(--c-panel);
+  color: var(--c-ink);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.thumb__img {
+  display: block;
+}
+
+.thumb__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumb[aria-pressed="true"] {
+  border: 4px solid var(--c-ink);
+  padding: 4px 2px 2px;
+  box-shadow: var(--shadow) var(--shadow) 0 var(--c-ink);
+  transform: translate(-2px, -2px);
+}
+
+.thumb[aria-pressed="true"] .thumb__label {
+  padding: 0 4px;
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+.thumb:active {
+  transform: translate(var(--press), var(--press));
+}
+
+/* ---- 文字のようなボタン ---- */
+.linkish {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--c-ink-weak);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.linkish:disabled {
+  color: var(--c-weak);
 }

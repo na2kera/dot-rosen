@@ -1,0 +1,424 @@
+/* 管理画面（src/admin/）の見た目。共通の決まり（src/styles/tokens.css）に合わせる: 文字は 16px / 32px、角丸・半透明なし */
+
+.admin {
+  /* 状態の色（管理画面だけで使う） */
+  --adm-ok: #2f8f4e;
+  --adm-ok-bg: #dff1df;
+  --adm-wait: #b86a00;
+  --adm-wait-bg: #fbe8c8;
+  --adm-busy: #2a63c4;
+  --adm-busy-bg: #dce7fa;
+  --adm-bad-bg: #fadcd8;
+}
+
+/* 状態表示・本体・切り替えを縦に並べる */
+.adm {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.adm__body {
+  height: auto;
+  min-height: 0;
+}
+
+/* ---- 上部の状態表示 ---- */
+.adm-status {
+  display: grid;
+  gap: var(--gap);
+  padding: var(--gap) var(--pad) 12px;
+  border-bottom: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+}
+
+.adm-printer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--adm-ok-bg);
+}
+
+.adm-printer[data-online="false"] {
+  background: var(--c-alert);
+  color: var(--c-on-ink);
+}
+
+.adm-printer__lamp {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--adm-ok);
+}
+
+.adm-printer[data-online="false"] .adm-printer__lamp {
+  border-color: var(--c-on-ink);
+  background: var(--c-on-ink);
+  animation: adm-blink 1s steps(1, end) infinite;
+}
+
+@keyframes adm-blink {
+  50% {
+    background: var(--c-alert);
+  }
+}
+
+.adm-printer__text {
+  min-width: 0;
+}
+
+.adm-printer strong {
+  font-weight: normal;
+}
+
+.adm-printer__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-printer[data-online="true"] .adm-printer__detail {
+  color: var(--c-ink-weak);
+}
+
+/* 受付の切り替え（2つのボタンをつなげ、今の状態を塗る） */
+.adm-accept {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-right: var(--shadow);
+  margin-bottom: var(--shadow);
+  box-shadow: var(--shadow) var(--shadow) 0 var(--c-ink);
+}
+
+.adm-accept__btn {
+  min-height: 52px;
+  padding: 4px 8px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: var(--c-ink-weak);
+  font-size: var(--fs-l);
+  line-height: var(--lh-l);
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.adm-accept__btn + .adm-accept__btn {
+  border-left: 0;
+}
+
+.adm-accept__btn[aria-pressed="true"] {
+  cursor: default;
+}
+
+.adm-accept__btn[data-kind="on"][aria-pressed="true"] {
+  background: var(--adm-ok);
+  color: var(--c-on-ink);
+}
+
+.adm-accept__btn[data-kind="off"][aria-pressed="true"] {
+  background: var(--c-alert);
+  color: var(--c-on-ink);
+}
+
+.adm-accept__btn[aria-pressed="false"]:active:not(:disabled) {
+  background: var(--c-bg);
+}
+
+.adm-accept__btn:disabled {
+  cursor: progress;
+}
+
+.adm-counts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 0;
+  border: var(--line) solid var(--c-ink);
+}
+
+.adm-counts__item {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 4px;
+  border-left: var(--line) solid var(--c-ink);
+  white-space: nowrap;
+}
+
+.adm-counts__item:first-child {
+  border-left: 0;
+}
+
+.adm-counts__item dt {
+  color: var(--c-ink-weak);
+}
+
+.adm-counts__item dd {
+  margin: 0;
+  font-size: var(--fs-l);
+  line-height: var(--lh-l);
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-counts__item[data-tone="wait"][data-zero="false"] {
+  background: var(--adm-wait-bg);
+}
+
+.adm-counts__item[data-tone="busy"][data-zero="false"] {
+  background: var(--adm-busy-bg);
+}
+
+.adm-counts__item[data-tone="bad"][data-zero="false"] {
+  background: var(--adm-bad-bg);
+}
+
+.adm-counts__item[data-tone="bad"][data-zero="false"] dd {
+  color: var(--c-alert);
+}
+
+.adm-stale {
+  padding: 4px 12px;
+  border: var(--line) solid var(--c-alert);
+  color: var(--c-alert);
+  background: var(--c-panel);
+}
+
+/* ---- 下部の切り替え ---- */
+.adm-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  padding-bottom: var(--safe-b);
+  border-top: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+}
+
+.adm-tabs__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: var(--nav-h);
+  padding: 4px 2px;
+  border: 0;
+  border-left: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: var(--c-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+
+.adm-tabs__btn:first-child {
+  border-left: 0;
+}
+
+.adm-tabs__btn[aria-current="page"] {
+  background: var(--c-ink);
+  color: var(--c-on-ink);
+}
+
+/* ---- 一覧（印刷・路線） ---- */
+.adm-list {
+  display: grid;
+  gap: calc(12px + var(--shadow));
+  margin: 0;
+  padding: 0 var(--shadow) var(--shadow) 0;
+  list-style: none;
+}
+
+.adm-item {
+  display: grid;
+  gap: var(--gap);
+  padding: 12px;
+  border: var(--line) solid var(--c-ink);
+  border-left-width: 8px;
+  background: var(--c-panel);
+  box-shadow: var(--shadow) var(--shadow) 0 var(--c-ink);
+}
+
+.adm-item[data-tone="wait"] {
+  border-left-color: var(--adm-wait);
+}
+
+.adm-item[data-tone="busy"] {
+  border-left-color: var(--adm-busy);
+}
+
+.adm-item[data-tone="ok"] {
+  border-left-color: var(--adm-ok);
+}
+
+.adm-item[data-tone="bad"] {
+  border-left-color: var(--c-alert);
+}
+
+.adm-item[data-tone="off"] {
+  border-left-color: var(--c-weak);
+}
+
+.adm-item__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.adm-item__no {
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-item__time {
+  margin-left: auto;
+  color: var(--c-ink-weak);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.adm-item__name {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-ink);
+  text-decoration: underline;
+  text-decoration-thickness: var(--line);
+  text-underline-offset: 4px;
+  padding: 4px 0;
+}
+
+.adm-item__name::after {
+  content: " ↗";
+  color: var(--c-ink-weak);
+}
+
+.adm-item__note {
+  padding: 4px 8px;
+  border: var(--line) solid var(--c-alert);
+  background: var(--adm-bad-bg);
+}
+
+.adm-item__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 4px var(--shadow) var(--shadow) 0;
+}
+
+.adm-item__actions > .btn {
+  flex: 1 1 auto;
+}
+
+/* 路線の一覧: 非公開にするのはまれな操作なので、目立たせすぎない */
+.adm-item__actions--start > .btn {
+  flex: none;
+}
+
+.adm-tag {
+  display: inline-block;
+  padding: 0 8px;
+  border: var(--line) solid var(--c-ink);
+  white-space: nowrap;
+}
+
+.adm-tag[data-tone="wait"] {
+  background: var(--adm-wait-bg);
+}
+
+.adm-tag[data-tone="busy"] {
+  background: var(--adm-busy);
+  color: var(--c-on-ink);
+}
+
+.adm-tag[data-tone="ok"] {
+  background: var(--adm-ok);
+  color: var(--c-on-ink);
+}
+
+.adm-tag[data-tone="bad"] {
+  background: var(--c-alert);
+  color: var(--c-on-ink);
+}
+
+.adm-tag[data-tone="off"] {
+  border-color: var(--c-weak);
+  color: var(--c-ink-weak);
+}
+
+.adm-tag--plain {
+  border-style: dashed;
+}
+
+.adm-empty {
+  padding: var(--pad) 0;
+  color: var(--c-ink-weak);
+  text-align: center;
+}
+
+.adm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: calc(12px + var(--shadow));
+  padding-right: var(--shadow);
+}
+
+/* ---- 会場コード ---- */
+.adm-event {
+  display: grid;
+  gap: 12px;
+}
+
+.adm-qr {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  justify-self: center;
+  border: var(--line) solid var(--c-ink);
+  image-rendering: pixelated;
+}
+
+.adm-event__url {
+  padding: 8px 12px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-bg);
+  overflow-wrap: anywhere;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.adm-event__btns {
+  display: grid;
+  gap: 12px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+.adm-event strong {
+  font-weight: normal;
+}
+
+/* ---- ログイン ---- */
+.adm-login {
+  display: grid;
+  gap: var(--pad);
+  padding-right: var(--shadow);
+}
+
+.adm-login__error {
+  padding: 4px 12px;
+  border: var(--line) solid var(--c-alert);
+  color: var(--c-alert);
+}
+
+/* お知らせは上部の状態表示（受付の切り替え）に重ならないよう、下の切り替えの上に出す */
+.admin .toasts {
+  top: auto;
+  bottom: calc(var(--nav-h) + var(--safe-b) + 12px);
+}

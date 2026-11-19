@@ -19,6 +19,8 @@
   --c-board-led-off: #1f232b;
   --c-board-ink: #ff9d2e;
   --c-board-sub: #7dfc8a;
+  /* 見出し風の表示の中の、失敗・取り消し */
+  --c-board-alert: #ff6b5e;
 
   /* 地図（src/map/engine.ts が読む。#rrggbb で書く） */
   --map-sea: #9fc6dd;

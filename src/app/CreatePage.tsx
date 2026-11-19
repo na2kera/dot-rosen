@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MIN_STATIONS } from "../../shared/route/index.ts";
 import { loadAppData, type AppData } from "../data/load.ts";
 import { LineStep } from "../steps/line/LineStep.tsx";
-import { PlaceholderStep } from "../steps/PlaceholderStep.tsx";
+import { FinishStep } from "../steps/finish/FinishStep.tsx";
 import { StationsStep } from "../steps/stations/StationsStep.tsx";
+import { TrainStep } from "../steps/train/TrainStep.tsx";
 import { browserStorage, randomBytes } from "../store/browser.ts";
 import { getOrCreateClientId } from "../store/device.ts";
 import { stationsRemaining } from "../store/route-ops.ts";
@@ -16,6 +17,7 @@ import { Loading } from "../ui/Loading.tsx";
 import { STEPS, StepNav } from "../ui/StepNav.tsx";
 import { toast, ToastHost } from "../ui/Toast.tsx";
 import { AppContext, useApp, useDraft, useUi, type AppContextValue } from "./AppContext.tsx";
+import { getPublish, takeInitialStep } from "./services.ts";
 
 /** 一度読んだデータは画面を移っても使い回す */
 let dataPromise: Promise<AppData> | null = null;
@@ -59,7 +61,7 @@ function CreateApp({ data }: { data: AppData }) {
       storage,
       clientId: getOrCreateClientId(storage, randomBytes),
       route: createRouteStore({ storage, lookup: data.index.lookup }),
-      ui: createUiStore(),
+      ui: createUiStore({ step: takeInitialStep() ?? 1 }),
     };
   }, [data]);
 
@@ -67,6 +69,13 @@ function CreateApp({ data }: { data: AppData }) {
   useEffect(() => {
     if (import.meta.env.DEV) (window as unknown as { __app?: AppContextValue }).__app = ctx;
   }, [ctx]);
+
+  // 印刷の申し込みが途中なら、状態の問い合わせを続ける
+  useEffect(() => {
+    const p = getPublish();
+    p.resumePolling();
+    return () => p.stopPolling();
+  }, []);
 
   // ページを離れるときは待たずに保存する
   useEffect(() => {
@@ -88,9 +97,10 @@ function CreateApp({ data }: { data: AppData }) {
   );
 }
 
-function boardSub(step: Step, remaining: number, symbol: string): string | undefined {
+function boardSub(step: Step, remaining: number, symbol: string, cars: number): string | undefined {
   if (step === 1) return `あと${remaining}駅`;
   if (step === 2) return symbol || undefined;
+  if (step === 3) return `${cars}両`;
   return undefined;
 }
 
@@ -103,12 +113,12 @@ function CreateLayout() {
 
   return (
     <div className="app">
-      <Board title={`${step} ${meta.title}`} sub={boardSub(step, stationsRemaining(draft), draft.symbol)} />
+      <Board title={`${step} ${meta.title}`} sub={boardSub(step, stationsRemaining(draft), draft.symbol, draft.train.cars)} />
       <main className="app__main">
         {step === 1 && <StationsStep />}
         {step === 2 && <LineStep />}
-        {step === 3 && <PlaceholderStep title="電車をつくる" />}
-        {step === 4 && <PlaceholderStep title="できあがり" />}
+        {step === 3 && <TrainStep />}
+        {step === 4 && <FinishStep />}
       </main>
       <StepNav current={step} locked={locked} onSelect={ui.setStep} onLocked={(_, reason) => toast(reason, { tone: "alert" })} />
       <DialogHost />

@@ -13,6 +13,10 @@ export const STORAGE_KEYS = {
   clientId: "dot-rosen:client-id",
   eventCode: "dot-rosen:event-code",
   hintSeen: "dot-rosen:hint-seen",
+  // 保存した路線（編集の鍵、id、期限、保存した時点の内容）
+  saved: "dot-rosen:saved",
+  // 印刷の申し込み（requestId、jobId、状態）
+  print: "dot-rosen:print",
 } as const;
 
 /** 記憶だけの保存先（テストや、localStorage が使えない端末用） */

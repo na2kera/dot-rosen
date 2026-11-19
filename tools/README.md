@@ -6,6 +6,8 @@
 |---|---|
 | `pnpm data:build` | `tools/build-stations.ts`。駅データ・地図データを `public/data/` に作り直す |
 | `pnpm font:build` | `tools/build-font.ts`。点データのフォントと woff2 を `public/fonts/` に作り直す（駅名の文字を使うので `data:build` の後に実行） |
+| `pnpm sprites:sheet` | `tools/sprites-sheet.ts`。電車のパーツの確認用一覧を `tools/out/sprites/` に出す（拡大ページは `review/`） |
+| `pnpm sprites:bench` | `tools/bench-sprites.ts`。顔1つ・側面2両・白黒変換の時間を、新しいプロセスで 7 回測る |
 
 生成物（`public/data/`、`public/fonts/`）はコミットする。元データ（`data-src/`）と確認用の出力（`tools/out/`）はコミットしない。
 
@@ -68,3 +70,4 @@ Natural Earth 10m の範囲内の川は利根川1本（60点）だけで、多�
 - `stations-report.txt`: 都県別の駅数、統合前後の数、同名で別駅として残したもの、国の集計との比較など
 - `map-debug.png`: 全体図と都心部の拡大図
 - `font-coverage.txt`: フォントに無い文字、点の判定が食い違った文字
+- `sprites/`: 電車の確認用一覧（parts-face / parts-side / random-color / random-mono-light・bold / v2-compare / logos / print-test-*）、`ink-report.txt`（64×64 の黒の割合）

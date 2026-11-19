@@ -1,0 +1,317 @@
+import { describe, expect, it } from "vitest";
+import { bitToRgba } from "../shared/pix/index.ts";
+import {
+  C_GLASS,
+  C_GLASS2,
+  C_LAMP,
+  C_REFLECT,
+  CAR_BODY_BOTTOM,
+  CAR_BODY_TOP,
+  CAR_H,
+  CAR_W,
+  carLayout,
+  COLOR_IDS,
+  createRng,
+  decodeLogo,
+  defaultDesign,
+  encodeLogo,
+  FACE_BODY_BOTTOM,
+  FACE_BODY_TOP,
+  FACE_CHOICES,
+  FACE_H,
+  FACE_KEYS,
+  FACE_W,
+  faceLayout,
+  hasMonoRule,
+  isLogoBits,
+  maxInkRatio,
+  near,
+  pantographCars,
+  parseTrainDesign,
+  PATTERN_SETS,
+  PRESET_LOGOS,
+  randomDesign,
+  renderCar,
+  renderConsist,
+  renderFace,
+  SIDE_CHOICES,
+  SIDE_KEYS,
+  toMono,
+  tones,
+  usedColorIndices,
+  type CarKind,
+  type FaceDesign,
+  type SideDesign,
+  type TrainDesign,
+} from "../shared/train/index.ts";
+
+/** 候補の全組み合わせ */
+function* product<K extends string>(table: Record<K, readonly { id: string }[]>, keys: K[]): Generator<Record<K, string>> {
+  const idx = keys.map(() => 0);
+  for (;;) {
+    const o = {} as Record<K, string>;
+    keys.forEach((k, i) => (o[k] = table[k][idx[i]].id));
+    yield o;
+    let i = keys.length - 1;
+    while (i >= 0) {
+      idx[i]++;
+      if (idx[i] < table[keys[i]].length) break;
+      idx[i] = 0;
+      i--;
+    }
+    if (i < 0) return;
+  }
+}
+
+const base = defaultDesign();
+const glassCount = (data: Uint8Array) => {
+  let n = 0;
+  for (const c of data) if (c === C_GLASS || c === C_GLASS2 || c === C_REFLECT) n++;
+  return n;
+};
+
+describe("正面の顔", () => {
+  it("全 19,440 通りで、ライト・窓・はみ出しに破綻がない", () => {
+    const faces = [...product(FACE_CHOICES, FACE_KEYS)];
+    expect(faces.length).toBe(4 * 5 * 3 * 3 * 3 * 3 * 3 * 4);
+    const errors: string[] = [];
+    faces.forEach((face, n) => {
+      const d: TrainDesign = { ...base, face: face as FaceDesign, bodyColor: COLOR_IDS[n % 12], bandColor: COLOR_IDS[(n + 5) % 12] };
+      const name = Object.values(face).join("/");
+      const img = renderFace(d);
+      if (img.width !== FACE_W || img.height !== FACE_H) errors.push(`${name}: 大きさ`);
+      const L = faceLayout(d);
+      if (L.lamps.length !== 2) errors.push(`${name}: ライトが2つない`);
+      let left = 0;
+      let right = 0;
+      for (let y = 0; y < FACE_H; y++) {
+        for (let x = 0; x < FACE_W; x++) {
+          const c = img.data[y * FACE_W + x];
+          if (c === 0) continue;
+          const inBody = y >= FACE_BODY_TOP && y <= FACE_BODY_BOTTOM && x >= L.bodyLeft[y] && x <= L.bodyRight[y];
+          if (y >= FACE_BODY_TOP && y <= FACE_BODY_BOTTOM && !inBody) errors.push(`${name}: 車体の外 (${x},${y})`);
+          if (c === C_LAMP) {
+            // ライトの光は輪郭の線より内側
+            if (!inBody || x <= L.bodyLeft[y] || x >= L.bodyRight[y]) errors.push(`${name}: ライトが車体の外 (${x},${y})`);
+            if (x < 32) left++;
+            else right++;
+          }
+        }
+      }
+      if (left === 0 || left !== right) errors.push(`${name}: ライトの点の数 ${left}/${right}`);
+      const g = glassCount(img.data);
+      if (g < 90) errors.push(`${name}: 窓ガラスが小さい ${g}`);
+      // 部品どうしが重ならない（窓・扉・ライト・行先表示）
+      for (const l of L.lamps) {
+        const rim = { x: l.x - 1, y: l.y - 1, w: l.w + 2, h: l.h + 2 };
+        if (L.windows.some((w) => near(rim, w)) || (L.door && near(rim, L.door))) errors.push(`${name}: ライトが窓・扉と重なる`);
+        if (L.sign && near(rim, L.sign)) errors.push(`${name}: ライトが行先表示と重なる`);
+      }
+    });
+    expect(errors.slice(0, 20)).toEqual([]);
+  }, 120_000);
+});
+
+describe("側面", () => {
+  it("全 1,296 通り × 先頭・中間・最後尾で、はみ出し・窓・ロゴに破綻がない", () => {
+    const sides = [...product(SIDE_CHOICES, SIDE_KEYS)];
+    expect(sides.length).toBe(6 * 4 * 3 * 3 * 6);
+    const errors: string[] = [];
+    sides.forEach((side, n) => {
+      const d: TrainDesign = {
+        ...base,
+        side: side as SideDesign,
+        bodyColor: COLOR_IDS[n % 12],
+        bandColor: COLOR_IDS[(n + 7) % 12],
+        logo: { bits: PRESET_LOGOS[n % 12].bits, fg: COLOR_IDS[(n + 3) % 12], bg: COLOR_IDS[(n + 9) % 12] },
+      };
+      const name = Object.values(side).join("/");
+      for (const kind of ["lead", "middle", "tail"] as CarKind[]) {
+        const img = renderCar(d, kind);
+        if (img.width !== CAR_W || img.height !== CAR_H) errors.push(`${name} ${kind}: 大きさ`);
+        const L = carLayout(d, kind);
+        for (let y = CAR_BODY_TOP; y <= CAR_BODY_BOTTOM; y++) {
+          for (let x = 0; x < CAR_W; x++) {
+            const c = img.data[y * CAR_W + x];
+            if (c === 0) continue;
+            const gangway = (x <= 1 || x >= 190) && y >= 29 && y <= 45;
+            if (!gangway && (x < L.bodyLeft[y] || x > L.bodyRight[y])) errors.push(`${name} ${kind}: 車体の外 (${x},${y})`);
+          }
+        }
+        const g = glassCount(img.data);
+        if (g < 200) errors.push(`${name} ${kind}: 窓ガラスが小さい ${g}`);
+        if (kind === "middle") {
+          if (L.logo) errors.push(`${name}: 中間車にロゴ`);
+          continue;
+        }
+        const r = L.logo;
+        if (!r) {
+          errors.push(`${name} ${kind}: ロゴが無い`);
+          continue;
+        }
+        // ロゴが 16×16 そのまま入っている
+        const px = decodeLogo(d.logo.bits);
+        const fg = tones(d.logo.fg).logoFg;
+        const bg = tones(d.logo.bg).logoBg;
+        for (let j = 0; j < 16; j++) {
+          for (let i = 0; i < 16; i++) {
+            if (img.data[(r.y + j) * CAR_W + r.x + i] !== (px[j * 16 + i] ? fg : bg)) {
+              errors.push(`${name} ${kind}: ロゴが欠けている (${i},${j})`);
+              j = 16;
+              break;
+            }
+          }
+        }
+        // ドア・窓と重ならない（配置の矩形と、ロゴの有無の差分の両方で確かめる）
+        const parts = [...L.doors, ...L.windows, ...(L.crewDoor ? [L.crewDoor] : []), ...(L.ribbon ? [L.ribbon] : [])];
+        if (parts.some((p) => near(r, p, 1))) errors.push(`${name} ${kind}: ロゴがドア・窓と重なる`);
+        if (L.cab && L.cab.spans.some(([a, b], k) => L.cab!.y + k >= r.y && L.cab!.y + k < r.y + 16 && b >= r.x - 1 && a <= r.x + 16)) errors.push(`${name} ${kind}: ロゴが運転台の窓と重なる`);
+        const plain = renderCar(d, kind, { logo: false });
+        let glassUnder = 0;
+        for (let y = 0; y < CAR_H; y++) {
+          for (let x = 0; x < CAR_W; x++) {
+            const i = y * CAR_W + x;
+            const inside = x >= r.x && x < r.x + 16 && y >= r.y && y < r.y + 16;
+            if (!inside && plain.data[i] !== img.data[i]) errors.push(`${name} ${kind}: ロゴの外が変わった (${x},${y})`);
+            if (inside && (plain.data[i] === C_GLASS || plain.data[i] === C_GLASS2)) glassUnder++;
+          }
+        }
+        if (glassUnder > 0) errors.push(`${name} ${kind}: ロゴの下に窓ガラス`);
+      }
+    });
+    expect(errors.slice(0, 20)).toEqual([]);
+  }, 180_000);
+
+  it("最後尾は先頭の左右反転（ロゴは反転しない）", () => {
+    const d = { ...base, cars: 8 };
+    const lead = renderCar(d, "lead", { logo: false, panto: false });
+    const tail = renderCar(d, "tail", { logo: false, panto: false });
+    for (let y = 0; y < CAR_H; y++) {
+      for (let x = 0; x < CAR_W; x++) {
+        // 線路は左右反転しないので、レールより上だけ比べる
+        if (y >= 59) continue;
+        expect(tail.data[y * CAR_W + x]).toBe(lead.data[y * CAR_W + CAR_W - 1 - x]);
+      }
+    }
+  });
+
+  it("編成の幅と、パンタグラフの位置", () => {
+    expect(pantographCars(1)).toEqual([true]);
+    expect(pantographCars(2)).toEqual([false, true]);
+    expect(pantographCars(8)).toEqual([false, true, false, false, true, false, false, false]);
+    for (let n = 3; n <= 16; n++) {
+      const p = pantographCars(n);
+      expect(p[0]).toBe(false);
+      expect(p[n - 1]).toBe(false);
+      expect(p.some(Boolean)).toBe(true);
+    }
+    for (const cars of [1, 2, 3, 16]) {
+      const img = renderConsist({ ...base, cars });
+      expect(img.width).toBe(CAR_W * cars);
+      expect(img.height).toBe(CAR_H);
+    }
+    expect(renderConsist({ ...base, cars: 8 }, { limit: 2 }).width).toBe(CAR_W * 2);
+  });
+});
+
+describe("決まった結果", () => {
+  it("同じデザインを2回描くと同じ結果", () => {
+    const rng = createRng(1);
+    for (let i = 0; i < 50; i++) {
+      const d = randomDesign(rng, { ...base, cars: 4 });
+      expect(renderFace(d).data).toEqual(renderFace(d).data);
+      expect(renderConsist(d).data).toEqual(renderConsist(d).data);
+      for (const set of PATTERN_SETS) expect(toMono(renderFace(d), 3, set).data).toEqual(toMono(renderFace(d), 3, set).data);
+    }
+  });
+
+  it("ランダムは両数を変えず、車体色と帯色が違う", () => {
+    const rng = createRng(99);
+    for (let i = 0; i < 500; i++) {
+      const d = randomDesign(rng, { ...base, cars: 5 });
+      expect(d.cars).toBe(5);
+      expect(d.bodyColor).not.toBe(d.bandColor);
+      expect(parseTrainDesign(d)).toEqual({ ok: true, value: d });
+      expect(PRESET_LOGOS.some((l) => l.bits === d.logo.bits)).toBe(true);
+    }
+  });
+});
+
+describe("parseTrainDesign", () => {
+  it("正しい値は通り、余計なキーは捨て、16進は小文字にする", () => {
+    const d = defaultDesign();
+    const r = parseTrainDesign({ ...d, extra: 1, face: { ...d.face, x: 2 }, logo: { ...d.logo, bits: d.logo.bits.toUpperCase() } });
+    expect(r).toEqual({ ok: true, value: d });
+  });
+
+  it("不正な値を拒否する", () => {
+    const d = defaultDesign();
+    const bad: [unknown, string][] = [
+      [null, "invalid_train"],
+      [[], "invalid_train"],
+      ["x", "invalid_train"],
+      [{ ...d, face: { ...d.face, window: "huge" } }, "invalid_face"],
+      [{ ...d, face: { ...d.face, door: undefined } }, "invalid_face"],
+      [{ ...d, face: null }, "invalid_face"],
+      [{ ...d, side: { ...d.side, doors: 4 } }, "invalid_side"],
+      [{ ...d, side: { ...d.side, band: "toString" } }, "invalid_side"],
+      [{ ...d, bodyColor: "gold" }, "invalid_color"],
+      [{ ...d, bandColor: 3 }, "invalid_color"],
+      [{ ...d, cars: 0 }, "invalid_cars"],
+      [{ ...d, cars: 17 }, "invalid_cars"],
+      [{ ...d, cars: 2.5 }, "invalid_cars"],
+      [{ ...d, cars: "8" }, "invalid_cars"],
+      [{ ...d, logo: { ...d.logo, bits: "00" } }, "invalid_logo"],
+      [{ ...d, logo: { ...d.logo, bits: "g".repeat(64) } }, "invalid_logo"],
+      [{ ...d, logo: { ...d.logo, fg: "gold" } }, "invalid_logo"],
+      [{ ...d, logo: undefined }, "invalid_logo"],
+    ];
+    for (const [input, error] of bad) expect(parseTrainDesign(input)).toEqual({ ok: false, error });
+  });
+});
+
+describe("ロゴ", () => {
+  it("既製ロゴは12種で、形式が正しく、互いに違う", () => {
+    expect(PRESET_LOGOS.length).toBe(12);
+    expect(new Set(PRESET_LOGOS.map((l) => l.bits)).size).toBe(12);
+    for (const l of PRESET_LOGOS) {
+      expect(isLogoBits(l.bits)).toBe(true);
+      expect(encodeLogo(decodeLogo(l.bits))).toBe(l.bits);
+    }
+  });
+});
+
+describe("白黒", () => {
+  it("絵に使うすべての色番号に、light と bold の規則がある", () => {
+    for (const set of PATTERN_SETS) for (const i of usedColorIndices()) expect(hasMonoRule(set, i), `${set} ${i}`).toBe(true);
+  });
+
+  it("出力は白と黒の2値だけ", () => {
+    const d = randomDesign(createRng(3));
+    for (const set of PATTERN_SETS) {
+      for (const scale of [1, 2, 3]) {
+        const m = toMono(renderFace(d), scale, set);
+        expect(m.width).toBe(FACE_W * scale);
+        const rgba = bitToRgba(m);
+        for (let i = 0; i < rgba.length; i += 4) expect(rgba[i] === 0 || rgba[i] === 255).toBe(true);
+      }
+    }
+  });
+
+  it("黒の割合を測れる", () => {
+    const d = defaultDesign();
+    const m = toMono(renderFace(d), 3, "bold");
+    const r = maxInkRatio(m, 64);
+    expect(r.ratio).toBeGreaterThan(0);
+    expect(r.ratio).toBeLessThanOrEqual(1);
+  });
+
+  it("12色はどの2色も bold では違う模様になる", () => {
+    const seen = new Set<string>();
+    for (const id of COLOR_IDS) {
+      const img = { kind: "indexed" as const, width: 24, height: 24, data: new Uint8Array(24 * 24).fill(tones(id).base) };
+      seen.add(Array.from(toMono(img, 1, "bold").data).join(","));
+    }
+    expect(seen.size).toBe(12);
+  });
+});

@@ -303,6 +303,8 @@ static void tryPostDone() {
 // ---- claim ----
 static char claimBuf[CLAIM_BODY_MAX + 1];
 
+static bool jobReceived = false;
+
 static void claimAndPrint() {
   if (!beginRequest("/api/printer/claim")) {
     currentHealth = Health::Unreachable;
@@ -324,6 +326,7 @@ static void claimAndPrint() {
     dropConnection();  // 本文は読まないので接続は閉じる
     return;
   }
+  jobReceived = true;  // 200 = 印刷を受け取った（中身が不正でも問い合わせ間隔は短くする）
   size_t len = 0;
   String readErr;
   const bool complete =
@@ -369,7 +372,17 @@ static void claimAndPrint() {
   tryPostDone();
 }
 
-void tick() {
+bool hasPendingDone() { return pending.active; }
+
+static void tickBody();
+
+bool tick() {
+  jobReceived = false;
+  tickBody();
+  return jobReceived;
+}
+
+static void tickBody() {
   if (!ensureTime()) return;
   if (pending.active) {
     // 未送信の完了報告がある間は claim しない

@@ -51,7 +51,11 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 
 1. Wi-Fi 接続後、NTP で時刻を合わせる。合うまでサーバーには接続しない（15 秒合わなければ黄色、`LAST_ERROR ntp_timeout`。その後もやり直し続ける）。待つ間もボタンと USB は動く。
    - 注（未検証）: このコア（Arduino-ESP32 2.0.17）の設定には `MBEDTLS_HAVE_TIME_DATE` が無く、**証明書の有効期間（日付）は検証されない可能性がある**。証明書の署名の検証は行う。時刻合わせは取り決めどおり行っている。
-2. 3 秒おきに `POST /api/printer/claim`（`AUTO_CLAIM` / `CLAIM ON` のとき）。204 なら何もしない。
+2. `POST /api/printer/claim` で印刷を取りに行く（`AUTO_CLAIM` / `CLAIM ON` のとき）。204 なら何もしない。
+   - 間隔は通常 3 秒（`POLL_INTERVAL_MS`）。最後に印刷を受け取ってから（起動直後は起動から）2 分間（`POLL_IDLE_AFTER_MS`）印刷が無ければ 10 秒（`POLL_INTERVAL_IDLE_MS`）に延ばす。サーバーの無料枠（1 日 10 万リクエスト）を節約するため（docs/api.md 5 の末尾）。
+   - 印刷を受け取ったとき（claim が 200）と、本体ボタンを押したとき（テスト印刷）は 3 秒に戻す。USB コマンドでは戻らない。
+   - 未送信の完了報告がある間は、送り直しを 3 秒おきに行う（延ばさない）。
+   - 今の間隔は `STATUS` の `POLL interval_ms=...` で見える。
    - 200 の本文は `CLAIM_BODY_MAX`（256 バイト）までのバッファに、Content-Length か chunked の終端まで読み切る。
    - JSON が閉じ括弧まであること、`jobId` / `width` / `height` が終端まで読める 0 以上の整数であること、`width` が 384、`height` が 1〜`MAX_JOB_HEIGHT`（3200）であることを確かめる。
    - どれかが欠けたら印刷しない。`jobId` が読めれば `done` に `{"ok":false,"error":"bad_claim"}` を報告する。`jobId` も読めなければ報告できないので、`LAST_ERROR claim_bad_no_job_...` を記録して次の周期へ。
@@ -72,7 +76,7 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 
 | コマンド | 動き | 返事 |
 |---|---|---|
-| `STATUS` | 状態を返す | 下記の 10 行 |
+| `STATUS` | 状態を返す | 下記の 11 行 |
 | `TEST 1` / `TEST 2` | ボタンと同じテスト印刷 | `DONE` か `ERR <理由>` |
 | `BAUD 115200` / `BAUD 9600` | プリンタに速度変更の命令（ESC ## SBDR）を今の速度で送り、こちらの速度も切り替えて、短いテスト印刷（64 行）をする | `BAUD <速度>` のあと `DONE` か `ERR <理由>` |
 | `BAUD LOCAL 115200` / `BAUD LOCAL 9600` | **こちら側の速度だけ**切り替える（プリンタには送らない）。速度が食い違ったときの復旧用 | `BAUD LOCAL <速度>` |
@@ -88,6 +92,7 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 WIFI connected ssid=... ip=... rssi=-55      （または disconnected / not_configured）
 SERVER ok http=204 url=... tls=verify auto_claim=on
 NTP synced                                    （または not_synced）
+POLL interval_ms=3000 idle_ms=4512            （今の問い合わせ間隔と、最後に印刷を受け取って・ボタンを押して・起動してからの経過）
 JOB id=42 rows_sent=960 height=1800 printing=0   （今の、または最後の印刷。rows_sent は USB / テスト印刷でも更新）
 PENDING_DONE none                             （または job=42 ok=0 error=rows_http_500 attempts=3）
 PRINTER baud=9600 cts_g19=0 use_cts=0 cts_busy_level=1 sync_after_band=0

@@ -5,7 +5,12 @@
 // 1: 自動で claim する（既定）。0: しない。USB の CLAIM ON / CLAIM OFF でも切り替えられる
 // （電源を切るとここの値に戻る）。未送信の完了報告は claim の入・切に関係なく送り直す
 #define AUTO_CLAIM 1
-#define POLL_INTERVAL_MS 3000          // POST /api/printer/claim の間隔。完了報告の送り直しもこの間隔
+// 問い合わせの間隔（docs/api.md 5 の末尾）。サーバーの無料枠（1 日 10 万リクエスト）の節約のため、
+// 最後に印刷を受け取ってから（起動直後は起動から）POLL_IDLE_AFTER_MS の間印刷が無ければ
+// POLL_INTERVAL_IDLE_MS に延ばす。印刷を受け取るか本体ボタンを押すと POLL_INTERVAL_MS に戻す。
+#define POLL_INTERVAL_MS 3000          // 通常の claim の間隔。完了報告の送り直しは常にこの間隔
+#define POLL_INTERVAL_IDLE_MS 10000    // 印刷が無い間の claim の間隔
+#define POLL_IDLE_AFTER_MS 120000      // この時間印刷が無ければ間隔を延ばす（2 分）
 #define HTTP_CONNECT_TIMEOUT_MS 10000
 #define HTTP_TIMEOUT_MS 15000          // 応答の待ち時間・本文の読み取りの待ち時間
 #define TLS_HANDSHAKE_TIMEOUT_S 10     // TLS ハンドシェイクの待ち時間（秒）

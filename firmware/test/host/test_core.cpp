@@ -293,6 +293,23 @@ static void testDoneAndRetry() {
   CHECK(strlen(p.error) == 64);
 }
 
+static void testPollInterval() {
+  const uint32_t F = 3000, S = 10000, IDLE = 120000;
+  // 起動直後（lastActivity = 起動時刻）
+  CHECK(pollInterval(0, 0, false, F, S, IDLE) == F);
+  CHECK(pollInterval(119999, 0, false, F, S, IDLE) == F);
+  CHECK(pollInterval(120000, 0, false, F, S, IDLE) == S);  // ちょうど 2 分で延ばす
+  CHECK(pollInterval(500000, 0, false, F, S, IDLE) == S);
+  // 印刷を受け取った・ボタンを押した → 短い方に戻る
+  CHECK(pollInterval(500000, 499000, false, F, S, IDLE) == F);
+  CHECK(pollInterval(500000 + IDLE, 500000, false, F, S, IDLE) == S);
+  // 未送信の完了報告があれば常に短い方
+  CHECK(pollInterval(500000, 0, true, F, S, IDLE) == F);
+  // millis() の桁あふれをまたぐ
+  CHECK(pollInterval(0x00000100u, 0xFFFFFF00u, false, F, S, IDLE) == F);
+  CHECK(pollInterval(0x00020000u, 0xFFFFFF00u, false, F, S, IDLE) == S);  // 約 131 秒後
+}
+
 static void testBusyStats() {
   BusyStats s;
   s.sample(false, 0);
@@ -357,6 +374,7 @@ int main(int argc, char** argv) {
   testBodyReader();
   testDoneAndRetry();
   testBusyStats();
+  testPollInterval();
   testClaimCommand();
   testStrings();
   if (argc > 1) {

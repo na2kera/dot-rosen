@@ -595,6 +595,13 @@ void PendingDone::retryLater(uint32_t now, uint32_t interval) {
   nextAt = now + interval;
 }
 
+uint32_t pollInterval(uint32_t now, uint32_t lastActivity, bool pendingDone, uint32_t fastMs,
+                      uint32_t slowMs, uint32_t idleAfterMs) {
+  if (pendingDone) return fastMs;
+  // 差を符号なしで取るので millis() の桁あふれをまたいでも正しい
+  return (now - lastActivity) >= idleAfterMs ? slowMs : fastMs;
+}
+
 void BusyStats::sample(bool busy, uint32_t now) {
   if (busy && !inBusy) {
     inBusy = true;

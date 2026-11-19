@@ -190,6 +190,12 @@ struct PendingDone {
   void clear() { active = false; }
 };
 
+// 問い合わせの間隔を決める。lastActivity は最後に印刷を受け取った時刻
+// （起動時・本体ボタンを押した時刻でも更新する）。未送信の完了報告があれば常に fastMs。
+// now - lastActivity が idleAfterMs 以上なら slowMs、そうでなければ fastMs。
+uint32_t pollInterval(uint32_t now, uint32_t lastActivity, bool pendingDone, uint32_t fastMs,
+                      uint32_t slowMs, uint32_t idleAfterMs);
+
 // CTS（G19）が busy になった回数と累積時間（設定に関係なく、ピンを見て記録する）
 struct BusyStats {
   uint32_t count = 0;

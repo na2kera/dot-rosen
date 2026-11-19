@@ -23,7 +23,10 @@ bool timeSynced();
 // 問い合わせの周期ごとに呼ぶ（Wi-Fi 接続中だけ）。
 // 未送信の完了報告があれば、それを 1 回送り直すだけで claim はしない。
 // 無ければ（自動 claim が有効なら）claim し、印刷があれば印刷して完了報告を送る。
-void tick();
+// claim で印刷を受け取った（200）なら true。
+bool tick();
+// 未送信の完了報告があるか
+bool hasPendingDone();
 
 void setAutoClaim(bool on);
 bool autoClaim();

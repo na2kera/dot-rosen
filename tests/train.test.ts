@@ -3,6 +3,7 @@ import { bitToRgba } from "../shared/pix/index.ts";
 import {
   C_GLASS,
   C_GLASS2,
+  C_INK,
   C_LAMP,
   C_REFLECT,
   CAR_BODY_BOTTOM,
@@ -313,5 +314,113 @@ describe("白黒", () => {
       seen.add(Array.from(toMono(img, 1, "bold").data).join(","));
     }
     expect(seen.size).toBe(12);
+  });
+});
+
+describe("白黒の変換結果", () => {
+  // 印刷の点 (x, y) を "0"/"1" の行にする。幅の端数（バイトの余り）が 0 であることも確かめる
+  const rowsOf = (m: ReturnType<typeof toMono>): string[] => {
+    const rows: string[] = [];
+    for (let y = 0; y < m.height; y++) {
+      let s = "";
+      for (let x = 0; x < m.stride * 8; x++) {
+        const b = (m.data[y * m.stride + (x >> 3)] >> (7 - (x & 7))) & 1;
+        if (x < m.width) s += b;
+        else expect(b, `余りのビット (${x},${y})`).toBe(0);
+      }
+      rows.push(s);
+    }
+    return rows;
+  };
+  const img = (w: number, h: number, px: number[]) => ({ kind: "indexed" as const, width: w, height: h, data: Uint8Array.from(px) });
+  const RED = tones("red").base;
+  const ORANGE = tones("orange").base;
+  const SILVER = tones("silver").base;
+
+  it("小さな画像を、期待するビット列そのものと比べる（light / bold、倍率 1・2・3）", () => {
+    // 1行目: 黒・なし・オレンジ、2行目: 赤・赤・黒（幅 3 は 8 の倍数でない）
+    const src = img(3, 2, [C_INK, 0, ORANGE, RED, RED, C_INK]);
+    // 模様は印刷2ドットが1マス。bold: オレンジ = マスの x が 4 の倍数、赤 = マスの y が 4 の倍数
+    // light: オレンジ = マスの x が 6 の倍数、赤 = マスの y が 5 の倍数
+    const expected: Record<"light" | "bold", Record<number, string[]>> = {
+      bold: {
+        1: ["100", "111"],
+        2: ["110000", "110000", "000011", "000011"],
+        3: ["111000001", "111000001", "111000001", "000000111", "000000111", "000000111"],
+      },
+      light: {
+        1: ["100", "111"],
+        2: ["110000", "110000", "000011", "000011"],
+        3: ["111000000", "111000000", "111000000", "000000111", "000000111", "000000111"],
+      },
+    };
+    for (const set of PATTERN_SETS) {
+      for (const scale of [1, 2, 3]) {
+        const m = toMono(src, scale, set);
+        expect([m.width, m.height, m.stride], `${set} ×${scale}`).toEqual([3 * scale, 2 * scale, Math.ceil((3 * scale) / 8)]);
+        expect(rowsOf(m), `${set} ×${scale}`).toEqual(expected[set][scale]);
+      }
+    }
+  });
+
+  it("模様の位相は印刷の座標で決まる（縦長の帯、幅 10 と 12）", () => {
+    // 10×10 の赤を倍率 2 で。bold の赤はマスの y = 0, 4, 8 の行（印刷の y = 0,1, 8,9, 16,17）が黒
+    const red = toMono(img(10, 10, new Array(100).fill(RED)), 2, "bold");
+    const want = Array.from({ length: 20 }, (_, y) => ((y >> 1) % 4 === 0 ? "1" : "0").repeat(20));
+    expect(rowsOf(red)).toEqual(want);
+    // bold のオレンジ: マスの x が 4 の倍数の列（印刷の x = 0,1, 8,9, 16,17）が黒。幅 12（4 の倍数で4ドットずつ読む経路）
+    const orange = toMono(img(12, 1, new Array(12).fill(ORANGE)), 2, "bold");
+    const line = Array.from({ length: 24 }, (_, x) => ((x >> 1) % 4 === 0 ? "1" : "0")).join("");
+    expect(line).toBe("110000001100000011000000");
+    expect(rowsOf(orange)).toEqual([line, line]);
+  });
+
+  it("色が混ざった画像を、素朴な変換と1ドットずつ比べる", () => {
+    // 模様の定義（mono.ts と同じ規則を、テスト側で素朴に書いたもの）
+    const rule: Record<"light" | "bold", Record<number, (cx: number, cy: number) => boolean>> = {
+      bold: {
+        [C_INK]: () => true,
+        0: () => false,
+        [C_GLASS]: () => false,
+        [RED]: (_x, y) => y % 4 === 0,
+        [ORANGE]: (x) => x % 4 === 0,
+        [SILVER]: (x, y) => x % 3 === 0 && y % 3 === 0,
+      },
+      light: {
+        [C_INK]: () => true,
+        0: () => false,
+        [C_GLASS]: () => false,
+        [RED]: (_x, y) => y % 5 === 0,
+        [ORANGE]: (x) => x % 6 === 0,
+        [SILVER]: (x, y) => x % 6 === 0 && y % 4 === 0,
+      },
+    };
+    const palette = [C_INK, 0, C_GLASS, RED, ORANGE, SILVER];
+    const rng = createRng(7);
+    for (const [w, h] of [
+      [13, 11],
+      [12, 7],
+      [1, 1],
+      [17, 3],
+    ]) {
+      // 同じ色が続く区間ができるよう、ときどき前の色を繰り返す
+      const px: number[] = [];
+      for (let i = 0; i < w * h; i++) px.push(i > 0 && rng() < 0.5 ? px[i - 1] : palette[Math.floor(rng() * palette.length)]);
+      const src = img(w, h, px);
+      for (const set of PATTERN_SETS) {
+        for (const scale of [1, 2, 3]) {
+          const want: string[] = [];
+          for (let y = 0; y < h * scale; y++) {
+            let s = "";
+            for (let x = 0; x < w * scale; x++) {
+              const c = px[Math.floor(y / scale) * w + Math.floor(x / scale)];
+              s += rule[set][c](x >> 1, y >> 1) ? "1" : "0";
+            }
+            want.push(s);
+          }
+          expect(rowsOf(toMono(src, scale, set)), `${w}x${h} ${set} ×${scale}`).toEqual(want);
+        }
+      }
+    }
   });
 });

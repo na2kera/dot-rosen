@@ -1,0 +1,24 @@
+// Cloudflare Worker の設定。画面（静的ファイル）と API を1つの Worker で公開する。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dot-rosen",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    // 見つからないパスは index.html を返す（SPA）
+    "not_found_handling": "single-page-application",
+    // /api/* は静的ファイルより先に Worker が処理する
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dot-rosen",
+      // 本番の D1 を作ったら `wrangler d1 create dot-rosen` で出た ID をここに入れる。
+      // 空のままでもローカル開発（.wrangler/ 内のローカル D1）は動く。
+      "database_id": "",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": { "enabled": true }
+}

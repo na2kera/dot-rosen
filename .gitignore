@@ -11,3 +11,4 @@ firmware/include/secrets.h
 *.local
 data-src/
 tools/out/
+.pnpm-store/

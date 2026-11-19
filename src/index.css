@@ -1,0 +1,88 @@
+@font-face {
+  font-family: "DotGothic16";
+  src: url("/fonts/DotGothic16-Regular.woff2") format("woff2");
+  font-display: swap;
+}
+
+:root {
+  --bg: #fffcf2;
+  --ink: #282830;
+  --board-bg: #111;
+  --board-ink: #ffb020;
+  font-family: "DotGothic16", monospace;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px 32px;
+}
+
+/* 見出しだけ発車案内板風（黒地に光る文字） */
+.board {
+  margin: 0 -16px 16px;
+  padding: 16px;
+  background: var(--board-bg);
+}
+
+.board h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: normal;
+  color: var(--board-ink);
+  text-shadow: 0 0 6px rgb(255 176 32 / 60%);
+}
+
+h2 {
+  margin: 24px 0 8px;
+  font-size: 16px;
+  font-weight: normal;
+}
+
+.note {
+  margin: 0;
+}
+
+.error {
+  color: #c03030;
+}
+
+/* ドット絵の canvas は拡大してもぼかさない */
+.pix {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  border: 2px solid var(--ink);
+}
+
+/* 文字の見本は 1 ドット = 1px の 2 倍で出す（画面より大きければ縮める） */
+.text-sample .pix {
+  width: auto;
+  max-width: 100%;
+}
+
+.attribution {
+  margin-top: 32px;
+  padding-top: 8px;
+  border-top: 2px solid var(--ink);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.attribution p {
+  margin: 4px 0;
+}

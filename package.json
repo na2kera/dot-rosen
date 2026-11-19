@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.tools.json",
     "test": "vitest run",
     "data:build": "node tools/run.mjs tools/build-stations.ts",

@@ -250,6 +250,18 @@ Command parseCommand(const char* line) {
     if (equalsIgnoreCase(w, wn, "STATUS")) c.type = CmdType::Status;
     else if (equalsIgnoreCase(w, wn, "PAPER")) c.type = CmdType::Paper;
     else if (equalsIgnoreCase(w, wn, "HELP")) c.type = CmdType::Help;
+    else if (equalsIgnoreCase(w, wn, "VSCALE")) c.type = CmdType::VScaleQuery;
+    return c;
+  }
+  // VSCALE ? / VSCALE <100〜200>。それ以外の引数（範囲外・数字でない・2 つ以上）はエラー
+  if (equalsIgnoreCase(w, wn, "VSCALE")) {
+    if (t.count == 2 && equalsIgnoreCase(t.p[1], t.n[1], "?")) {
+      c.type = CmdType::VScaleQuery;
+    } else if (t.count == 2 && parseUint(t.p[1], t.n[1], v) && vscaleValid(v)) {
+      c.type = CmdType::VScale; c.arg = v;
+    } else {
+      c.type = CmdType::VScaleBad;
+    }
     return c;
   }
   if (t.count == 2) {
@@ -581,6 +593,31 @@ ReadStop readStopCheck(uint32_t now, uint32_t lastRx, uint32_t idleMs, const Dea
 }
 
 const char kErrUartStall[] = "uart_stall";
+
+// ---------------------------------------------------------------------------
+// 縦の倍率
+// ---------------------------------------------------------------------------
+bool vscaleValid(uint32_t percent) { return percent >= kVScaleMin && percent <= kVScaleMax; }
+
+uint32_t vscaleOutputRows(uint32_t srcRows, uint16_t percent) {
+  // 四捨五入: (n × p + 50) / 100。64 ビットで計算して桁あふれしない
+  return static_cast<uint32_t>((static_cast<uint64_t>(srcRows) * percent + 50) / 100);
+}
+
+void VScale::begin(uint16_t pct) {
+  percent = vscaleValid(pct) ? pct : 100;
+  srcDone = 0;
+  outDone = 0;
+}
+
+uint8_t VScale::repeat() {
+  // 元の行を 1 行進めたときの累計の目標と、ここまで出した行数の差（誤差の持ち越し）
+  ++srcDone;
+  const uint32_t target = vscaleOutputRows(srcDone, percent);
+  const uint32_t n = target - outDone;  // 100〜200% なら 1 か 2
+  outDone = target;
+  return static_cast<uint8_t>(n);
+}
 
 AfterPrint planAfterPrint(PrintFail f) {
   switch (f) {

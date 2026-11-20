@@ -410,6 +410,136 @@ static void testBusyStats() {
   CHECK(s.count == 0 && s.totalMs == 0);
 }
 
+// 高さ height を bandRows 行ずつに切って VScale を回し、元の行ごとの回数を返す
+static std::vector<uint8_t> vscaleRun(uint32_t height, uint16_t pct, uint16_t bandRows) {
+  std::vector<uint8_t> out;
+  VScale v;
+  v.begin(pct);
+  uint32_t offset = 0;
+  while (offset < height) {
+    const uint16_t rows = nextBandRows(height - offset, bandRows);
+    for (uint16_t i = 0; i < rows; ++i) out.push_back(v.repeat());
+    offset += rows;
+  }
+  return out;
+}
+
+static uint32_t sumOf(const std::vector<uint8_t>& v) {
+  uint32_t s = 0;
+  for (uint8_t x : v) s += x;
+  return s;
+}
+
+static void testVScale() {
+  // 範囲
+  CHECK(!vscaleValid(0));
+  CHECK(!vscaleValid(99));
+  CHECK(vscaleValid(100));
+  CHECK(vscaleValid(113));
+  CHECK(vscaleValid(200));
+  CHECK(!vscaleValid(201));
+  CHECK(!vscaleValid(100000));
+
+  // 合計の行数（四捨五入）
+  CHECK(vscaleOutputRows(400, 100) == 400);
+  CHECK(vscaleOutputRows(400, 113) == 452);
+  CHECK(vscaleOutputRows(400, 125) == 500);
+  CHECK(vscaleOutputRows(400, 200) == 800);
+  CHECK(vscaleOutputRows(3, 150) == 5);    // 4.5 → 5
+  CHECK(vscaleOutputRows(1, 149) == 1);    // 1.49 → 1
+  CHECK(vscaleOutputRows(1, 150) == 2);    // 1.5 → 2
+  CHECK(vscaleOutputRows(0, 150) == 0);
+  CHECK(vscaleOutputRows(3200, 200) == 6400);
+  CHECK(vscaleOutputRows(3200, 199) == 6368);
+
+  // 100% は常に 1 回
+  {
+    std::vector<uint8_t> r = vscaleRun(3200, 100, 96);
+    bool allOne = true;
+    for (uint8_t x : r) allOne &= (x == 1);
+    CHECK(allOne && r.size() == 3200);
+  }
+  // 200% はすべて 2 回
+  {
+    std::vector<uint8_t> r = vscaleRun(3200, 200, 96);
+    bool allTwo = true;
+    for (uint8_t x : r) allTwo &= (x == 2);
+    CHECK(allTwo);
+  }
+  // 133%: ほぼ 3 行ごとに 1 行足す（2 回の行の間隔は 3 か 4。133 は 4/3 より少し小さい）
+  {
+    std::vector<uint8_t> r = vscaleRun(300, 133, 96);
+    CHECK(r[0] == 1 && r[1] == 2 && r[2] == 1 && r[3] == 1 && r[4] == 2);
+    bool even = true;
+    int last = -1, twos = 0;
+    for (size_t i = 0; i < r.size(); ++i) {
+      if (r[i] != 2) continue;
+      if (last >= 0) even &= (i - last == 3 || i - last == 4);
+      last = static_cast<int>(i);
+      ++twos;
+    }
+    CHECK(even);
+    CHECK(twos == 99 && sumOf(r) == 399);
+  }
+  // 125%: 4 行ごとに 1 行足す（間隔はちょうど 4）
+  {
+    std::vector<uint8_t> r = vscaleRun(400, 125, 96);
+    bool even = true;
+    for (size_t i = 0; i < r.size(); ++i) even &= (r[i] == ((i % 4 == 1) ? 2 : 1));
+    CHECK(even);
+  }
+  // 範囲外を渡したら 100 として扱う
+  {
+    std::vector<uint8_t> r = vscaleRun(50, 250, 96);
+    CHECK(sumOf(r) == 50);
+    r = vscaleRun(50, 0, 96);
+    CHECK(sumOf(r) == 50);
+  }
+
+  // 合計・各行の回数（1 か 2）・途中の累計・帯の切り方によらないこと
+  const uint32_t heights[] = {1, 2, 3, 95, 96, 97, 400, 2200, 3200};
+  const uint16_t pcts[] = {100, 101, 110, 113, 120, 125, 133, 150, 167, 199, 200};
+  const uint16_t bands[] = {1, 7, 96, 240};
+  for (uint32_t h : heights) {
+    for (uint16_t p : pcts) {
+      const std::vector<uint8_t> ref = vscaleRun(h, p, 96);
+      CHECK(ref.size() == h);
+      CHECK(sumOf(ref) == vscaleOutputRows(h, p));
+      bool ok = true;
+      uint32_t acc = 0;
+      for (size_t i = 0; i < ref.size(); ++i) {
+        ok &= (ref[i] == 1 || ref[i] == 2);
+        acc += ref[i];
+        ok &= (acc == vscaleOutputRows(static_cast<uint32_t>(i + 1), p));  // 均等に散らす
+      }
+      CHECK(ok);
+      for (uint16_t b : bands) CHECK(vscaleRun(h, p, b) == ref);
+    }
+  }
+  // 1 つの帯（最大 240 行）を水増ししても 2 倍の 480 行まで（ヘッダの上限 255 で分ける前提）
+  CHECK(vscaleOutputRows(240, 200) == 480);
+}
+
+static void testVScaleCommand() {
+  Command c = parseCommand("VSCALE 113");
+  CHECK(c.type == CmdType::VScale && c.arg == 113);
+  c = parseCommand("vscale 100");
+  CHECK(c.type == CmdType::VScale && c.arg == 100);
+  c = parseCommand("VSCALE 200");
+  CHECK(c.type == CmdType::VScale && c.arg == 200);
+  CHECK(parseCommand("VSCALE").type == CmdType::VScaleQuery);
+  CHECK(parseCommand(" vscale ? ").type == CmdType::VScaleQuery);
+  CHECK(parseCommand("VSCALE 99").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 201").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 0").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE abc").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE -110").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 11.3").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 1234567890").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 110 120").type == CmdType::VScaleBad);
+  CHECK(parseCommand("VSCALE 110 120 130").type == CmdType::VScaleBad);
+}
+
 static void testClaimCommand() {
   Command c = parseCommand("CLAIM ON");
   CHECK(c.type == CmdType::Claim && c.arg == 1);
@@ -468,6 +598,8 @@ int main(int argc, char** argv) {
   testAfterPrint();
   testPollIdle();
   testClaimCommand();
+  testVScale();
+  testVScaleCommand();
   testStrings();
   if (argc > 1) {
     writePbm(argv[1], Pattern::Test1, "test1.pbm");

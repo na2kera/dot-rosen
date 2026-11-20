@@ -1,5 +1,6 @@
 // ドット路線メーカー: 感熱プリンタ（M5Stack ATOM Printer K118 / ATOM Lite）のファーム
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 
 #include "app_state.h"
@@ -25,6 +26,39 @@ static PollIdle pollIdle;
 static uint32_t currentPollInterval() {
   return pollIdle.interval(millis(), server::hasPendingDone(), POLL_INTERVAL_MS,
                            POLL_INTERVAL_IDLE_MS, POLL_IDLE_AFTER_MS);
+}
+
+// ---------------------------------------------------------------------------
+// 縦の倍率の保存（Arduino-ESP32 の Preferences = 本体の NVS）
+// ---------------------------------------------------------------------------
+static const char kPrefsNs[] = "rosen";
+static const char kPrefsVScale[] = "vscale";
+
+// 保存した値。無い・範囲外なら config.h の PRINTER_VSCALE_PERCENT
+static uint16_t loadVScale(bool& fromNvs) {
+  fromNvs = false;
+  uint16_t v = PRINTER_VSCALE_PERCENT;
+  Preferences prefs;
+  // 読み取り専用で開くと、名前空間がまだ無いときにエラーのログが出るので読み書きで開く
+  if (prefs.begin(kPrefsNs, false)) {
+    if (prefs.isKey(kPrefsVScale)) {
+      const uint16_t saved = prefs.getUShort(kPrefsVScale, PRINTER_VSCALE_PERCENT);
+      if (vscaleValid(saved)) {
+        v = saved;
+        fromNvs = true;
+      }
+    }
+    prefs.end();
+  }
+  return v;
+}
+
+static bool saveVScale(uint16_t v) {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNs, false)) return false;
+  const bool ok = prefs.putUShort(kPrefsVScale, v) == sizeof(uint16_t);
+  prefs.end();
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,9 +136,11 @@ static void cmdStatus() {
     else
       Serial.println("PENDING_DONE none");
   }
-  Serial.printf("PRINTER baud=%lu cts_g19=%d use_cts=%d cts_busy_level=%d sync_after_band=%d\n",
+  Serial.printf("PRINTER baud=%lu cts_g19=%d use_cts=%d cts_busy_level=%d sync_after_band=%d "
+                "vscale=%u\n",
                 static_cast<unsigned long>(printer::baud()), printer::ctsLevel(),
-                PRINTER_USE_CTS, PRINTER_CTS_BUSY_LEVEL, PRINTER_SYNC_AFTER_BAND);
+                PRINTER_USE_CTS, PRINTER_CTS_BUSY_LEVEL, PRINTER_SYNC_AFTER_BAND,
+                static_cast<unsigned>(printer::vscale()));
   Serial.printf("CTS_LAST_PRINT busy_count=%lu busy_ms=%lu\n",
                 static_cast<unsigned long>(printer::ctsBusyCount()),
                 static_cast<unsigned long>(printer::ctsBusyMs()));
@@ -157,7 +193,23 @@ static void handleLine(const char* line) {
     case CmdType::Status: cmdStatus(); return;
     case CmdType::Help:
       Serial.println("COMMANDS STATUS | TEST 1 | TEST 2 | BAUD 9600 | BAUD 115200 | "
-                     "BAUD LOCAL <rate> | BAUD ? | PAPER | PRINT <height> | CLAIM ON | CLAIM OFF");
+                     "BAUD LOCAL <rate> | BAUD ? | PAPER | PRINT <height> | CLAIM ON | CLAIM OFF | "
+                     "VSCALE <100-200> | VSCALE ?");
+      return;
+    case CmdType::VScaleQuery:
+      Serial.printf("VSCALE %u\n", static_cast<unsigned>(printer::vscale()));
+      return;
+    case CmdType::VScale:
+      // 保存できたときだけ変える（電源を入れ直すと戻る、ということが起きないように）
+      if (!saveVScale(static_cast<uint16_t>(c.arg))) {
+        Serial.println("ERR vscale_save_failed");
+        return;
+      }
+      printer::setVScale(static_cast<uint16_t>(c.arg));
+      Serial.printf("VSCALE %u\n", static_cast<unsigned>(printer::vscale()));
+      return;
+    case CmdType::VScaleBad:
+      Serial.println("ERR vscale_range_100_200");
       return;
     case CmdType::Test: runPattern(c.arg == 1 ? Pattern::Test1 : Pattern::Test2); return;
     case CmdType::Baud:
@@ -336,6 +388,12 @@ void setup() {
 
   printer::begin();
   Serial.printf("[boot] printer baud=%lu\n", static_cast<unsigned long>(printer::baud()));
+  {
+    bool fromNvs = false;
+    printer::setVScale(loadVScale(fromNvs));
+    Serial.printf("[boot] vscale=%u (%s)\n", static_cast<unsigned>(printer::vscale()),
+                  fromNvs ? "saved" : "config");
+  }
 
   server::begin();
   if (kWifiConfigured) {

@@ -30,7 +30,14 @@ String queryBaud();
 int queryDleEot(uint8_t n);  // 10 04 n
 int queryGsR1();             // 1D 72 01
 
+// 縦の倍率（%、100〜200）。範囲外は無視して false。
+// printStream の最初に読むので、印刷の途中で変えても次の印刷から効く。
+bool setVScale(uint16_t percent);
+uint16_t vscale();
+
 // 高さ height 行の画像を、帯（最大 bandRows 行）ごとに reader から読んで印刷する。
+// 縦の倍率が 100 でなければ、プリンタへ送る行だけを水増しする（rosen::VScale）。
+// reader に渡す offset / rows と rowsSent() は元の行数のまま。
 // 失敗したら false。err に理由。
 // ヘッダを送る前の失敗（取得の失敗など）ならプリンタを初期化し直す。
 // 帯の途中（ヘッダ送信後、データを送り切る前）で打ち切ったときは err = "uart_stall" とし、

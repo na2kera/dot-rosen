@@ -5,7 +5,9 @@
 using namespace rosen;
 
 static_assert(FETCH_ROWS >= 1 && FETCH_ROWS <= 240, "FETCH_ROWS は 1〜240（docs/api.md の count の範囲）");
-static_assert(FETCH_ROWS <= 255, "GS v 0 の yH を 0 に保つため 255 行以下");
+static_assert(FETCH_ROWS <= kMaxRasterRows, "GS v 0 の yH を 0 に保つため 255 行以下");
+static_assert(PRINTER_VSCALE_PERCENT >= kVScaleMin && PRINTER_VSCALE_PERCENT <= kVScaleMax,
+              "PRINTER_VSCALE_PERCENT は 100〜200");
 
 namespace printer {
 
@@ -13,6 +15,14 @@ static HardwareSerial& uart = Serial2;
 static uint32_t currentBaud = PRINTER_BAUD_DEFAULT;
 // 1 帯ぶんの作業用バッファ（PSRAM が無いので画像全体は持たない）
 static uint8_t bandBuf[FETCH_ROWS * kRowBytes];
+// 縦の倍率（%）。100 なら水増ししない
+static uint16_t vscalePercent = PRINTER_VSCALE_PERCENT;
+// 水増し後の行を貯めて 1 つの GS v 0 で送るバッファ。元の 1 帯（最大 FETCH_ROWS 行）は
+// 最大 2 倍になるので、2 × FETCH_ROWS 行（ヘッダの上限 255 行で頭打ち）。
+// 収まらない分は次の GS v 0 に分けて送る（FETCH_ROWS が 128 以上のとき）。
+static constexpr uint16_t kScaledBandRows =
+    (2 * FETCH_ROWS < kMaxRasterRows) ? 2 * FETCH_ROWS : kMaxRasterRows;
+static uint8_t scaledBuf[kScaledBandRows * kRowBytes];
 
 void begin() {
   // ATOM_PRINTER.cpp 8 行目と同じ: begin(baud, SERIAL_8N1, RX=33, TX=23)
@@ -185,9 +195,43 @@ static bool sendBand(const uint8_t* data, uint16_t rows, String& err, bool& midB
   return true;
 }
 
+bool setVScale(uint16_t percent) {
+  if (!vscaleValid(percent)) return false;
+  vscalePercent = percent;
+  return true;
+}
+
+uint16_t vscale() { return vscalePercent; }
+
+// 元の帯（rows 行）を水増ししながら送る。水増し後の行を scaledBuf に貯め、
+// kScaledBandRows 行たまるごと・帯の終わりに 1 つの GS v 0 で送る（ヘッダの高さ・
+// 送ったあとの待ち時間は水増し後の行数。sendBand がそのまま計算する）。
+static bool sendScaledBand(const uint8_t* data, uint16_t rows, VScale& vs, String& err,
+                           bool& midBand) {
+  midBand = false;
+  uint16_t out = 0;
+  for (uint16_t y = 0; y < rows; ++y) {
+    const uint8_t n = vs.repeat();
+    for (uint8_t k = 0; k < n; ++k) {
+      if (out == kScaledBandRows) {
+        if (!sendBand(scaledBuf, out, err, midBand)) return false;
+        out = 0;
+      }
+      memcpy(scaledBuf + static_cast<size_t>(out) * kRowBytes,
+             data + static_cast<size_t>(y) * kRowBytes, kRowBytes);
+      ++out;
+    }
+  }
+  if (out > 0) return sendBand(scaledBuf, out, err, midBand);
+  return true;
+}
+
 bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx,
                  String& err) {
   if (bandRows == 0 || bandRows > FETCH_ROWS) bandRows = FETCH_ROWS;
+  // 倍率は印刷の最初に決める（途中で VSCALE を受けても、この印刷では変えない）
+  VScale vs;
+  vs.begin(vscalePercent);
   ctsStats.reset();
   rowsSentCount = 0;
   lastFailKind = PrintFail::None;
@@ -203,7 +247,10 @@ bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx
       break;
     }
     bool midBand = false;
-    if (!sendBand(bandBuf, rows, err, midBand)) {
+    // 100% は従来どおり（1 バイトも変えない）
+    const bool sent = vs.percent == 100 ? sendBand(bandBuf, rows, err, midBand)
+                                        : sendScaledBand(bandBuf, rows, vs, err, midBand);
+    if (!sent) {
       lastFailKind = midBand ? PrintFail::MidBand : PrintFail::Clean;
       break;
     }

@@ -29,6 +29,32 @@ constexpr size_t kRasterHeaderSize = 8;
 void buildRasterHeader(uint8_t out[kRasterHeaderSize], uint16_t widthBytes,
                        uint16_t rows, uint8_t mode = 0);
 
+// 1 つの GS v 0 で送る行数の上限（yH を 0 に保つ）
+constexpr uint16_t kMaxRasterRows = 255;
+
+// ---------------------------------------------------------------------------
+// 縦の倍率（紙送りが足りず縦に縮んで刷れるときの補正）。
+// 元の行を上から順に送り、ところどころ同じ行をもう一度送る（行の水増し）。
+// 元の n 行目まで送り終えた時点の出力行数を round(n × percent / 100)（四捨五入）にそろえる
+// ので、水増しは均等に散らばり、合計は round(元の行数 × percent / 100) になる。
+// 状態は累計だけなので、帯をどこで切っても同じ結果になる。
+// 100 なら必ず 1 回（従来と同じ）。範囲は 100〜200（各行 1 回か 2 回）。
+// ---------------------------------------------------------------------------
+constexpr uint16_t kVScaleMin = 100;
+constexpr uint16_t kVScaleMax = 200;
+bool vscaleValid(uint32_t percent);
+// 元の行数 srcRows を倍率 percent で水増ししたあとの行数（四捨五入）
+uint32_t vscaleOutputRows(uint32_t srcRows, uint16_t percent);
+struct VScale {
+  uint16_t percent = 100;
+  uint32_t srcDone = 0;  // 処理した元の行数
+  uint32_t outDone = 0;  // 出した行数（水増し後）
+  // 印刷の最初に呼ぶ。範囲外なら 100 として扱う
+  void begin(uint16_t pct);
+  // 次の元の行を何回送るか（100〜200% なら 1 か 2）
+  uint8_t repeat();
+};
+
 // 帯分割: 残り行数と帯の最大行数から、次の帯の行数を返す。
 uint16_t nextBandRows(uint32_t remainingRows, uint16_t maxBandRows);
 // 全体の帯の数
@@ -102,6 +128,9 @@ enum class CmdType : uint8_t {
   Print,      // PRINT <高さ>              arg = 高さ
   Claim,      // CLAIM ON / CLAIM OFF      arg = 1 / 0
   Help,       // HELP
+  VScale,       // VSCALE <100〜200>         arg = 倍率（%）
+  VScaleQuery,  // VSCALE / VSCALE ?
+  VScaleBad,    // VSCALE の引数が範囲外・数字でない（値は変えない）
 };
 struct Command {
   CmdType type;

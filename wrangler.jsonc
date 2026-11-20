@@ -6,6 +6,9 @@
   "name": "dot-rosen",
   "main": "worker/index.ts",
   "compatibility_date": "2026-11-01",
+  // 公開先。独自ドメインが正で、workers.dev の URL（dot-rosen.na2kera.workers.dev）も残す
+  "routes": [{ "pattern": "dot-rosen.na2kera.com", "custom_domain": true }],
+  "workers_dev": true,
   "assets": {
     // 見つからないパスは index.html を返す（SPA）
     "not_found_handling": "single-page-application",

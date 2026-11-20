@@ -567,11 +567,14 @@ export function createPublishStore(deps: PublishDeps) {
     try {
       const prev = store.get().print;
       if (prev && prev.jobId === null && prev.editKey !== "" && prev.eventCode !== "") {
+        // 送り直しでも、先に押した時点の内容を保存ずみにする（決まり 1。進行中の保存は待ち、失敗したら送らない）。
+        // そのうえで元の requestId と元の rev で送る: 元の印刷があれば再生、無ければ stale になり、
+        // 決まり 4 で今の内容が申し込み直される（押した時点の内容と違う版の印刷が新しく作られない）
+        if (!(await ensureSaved(data))) return false;
         let rec: PrintRecord = prev;
         if (rec.rev === null) {
           // rev を持たない前の形式の記録: 元の requestId のまま、今の内容の rev を付ける
           // （元の印刷があればそれが返り、無ければその rev の内容でしか作られない）
-          if (!(await ensureSaved(data))) return false;
           rec = { ...rec, rev: store.get().saved!.savedRev };
         }
         if (!persist(rec, prev)) return false;

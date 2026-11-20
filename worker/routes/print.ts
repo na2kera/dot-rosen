@@ -94,12 +94,16 @@ async function progressResponse(db: Db, jobId: number, fallback: CardLook) {
 
 /**
  * 発行番号の採番、条件の確認、待ちへの追加を1つの batch で行う。
- * 1. 条件（受付中・会場コード・路線が存在し非公開でなく期限内・待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、
- *    sort_key = NULL（この batch で作った印）で追加する。発行番号は issue_counter + 1。
+ * 1. 条件（受付中・会場コード・路線が存在し非公開でなく期限内で、保存内容が rev を照合したときに読んだ routeData と同じ・
+ *    待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、sort_key = NULL（この batch で作った印）で追加する。
+ *    発行番号は issue_counter + 1。
  * 2. 1 で追加した行（sort_key IS NULL）があるときだけ issue_counter を 1 増やす。
  * 3. その行の sort_key を id にして返す。
  */
-function enqueueStatements(db: Db, p: { routeId: string; clientId: string; requestId: string; eventCode: string; snapshot: string; now: string }) {
+function enqueueStatements(
+  db: Db,
+  p: { routeId: string; clientId: string; requestId: string; eventCode: string; snapshot: string; now: string; routeData: string },
+) {
   return [
     db
       .prepare(
@@ -107,7 +111,7 @@ function enqueueStatements(db: Db, p: { routeId: string; clientId: string; reque
          SELECT ?1, ?2, ?3, ?4, 'queued', CAST(s.value AS INTEGER) + 1, NULL, ?5, ?6
          FROM settings s
          WHERE s.key = 'issue_counter'
-           AND EXISTS (SELECT 1 FROM routes WHERE id = ?1 AND hidden = 0 AND expires_at > ?6)
+           AND EXISTS (SELECT 1 FROM routes WHERE id = ?1 AND hidden = 0 AND expires_at > ?6 AND data = ?8)
            AND (SELECT value FROM settings WHERE key = 'accepting') = '1'
            AND (SELECT value FROM settings WHERE key = 'event_code') = ?4
            AND (SELECT COUNT(*) FROM print_jobs WHERE status = 'queued') < ?7
@@ -116,7 +120,7 @@ function enqueueStatements(db: Db, p: { routeId: string; clientId: string; reque
                < 1 + COALESCE((SELECT extra FROM print_grants WHERE client_id = ?2 AND event_code = ?4), 0)
          ON CONFLICT (client_id, request_id) DO NOTHING`,
       )
-      .bind(p.routeId, p.clientId, p.requestId, p.eventCode, p.snapshot, p.now, MAX_QUEUED),
+      .bind(p.routeId, p.clientId, p.requestId, p.eventCode, p.snapshot, p.now, MAX_QUEUED, p.routeData),
     db
       .prepare(
         `UPDATE settings SET value = CAST(value AS INTEGER) + 1
@@ -131,7 +135,7 @@ function enqueueStatements(db: Db, p: { routeId: string; clientId: string; reque
 }
 
 /** 追加できなかった理由を、確かめる順に調べる */
-async function rejectReason(db: Db, clientId: string, eventCode: string, routeId: string, now: Date): Promise<ApiError> {
+async function rejectReason(db: Db, clientId: string, eventCode: string, routeId: string, rev: string, now: Date): Promise<ApiError> {
   const s = await readSettings(db);
   if (s.eventCode !== eventCode) return new ApiError(403, "invalid_code");
   if (!s.accepting) return new ApiError(409, "not_accepting");
@@ -139,6 +143,8 @@ async function rejectReason(db: Db, clientId: string, eventCode: string, routeId
   const route = await loadRoute(db, routeId);
   if (!route || route.hidden) return notFound();
   if (route.expires_at <= iso(now)) return new ApiError(410, "expired");
+  // rev を照合したあとに、違う内容で上書きされた
+  if ((await routeRev(route.data)) !== rev) return new ApiError(409, "stale");
   const row = await db
     .prepare(
       `SELECT
@@ -193,7 +199,8 @@ export function printApi(deps: Deps) {
     if (!accepting) throw new ApiError(409, "not_accepting");
     const route = await checkOwner(await loadRoute(db, routeId), editKey, now);
     // 版の印: 保存されている内容が申し込みの版と違えば、印刷を作らず 409 stale（回数も番号も消費しない）。
-    // snapshot はこの照合と同じ読み出し（route.data）から作るので、このあとに上書きが来ても刷られるのは確かめた内容
+    // snapshot はこの照合と同じ読み出し（route.data）から作る。待ちへ追加する文の中でも保存内容がこの route.data と
+    // 同じことを確かめるので、照合のあとに上書きが来たら追加せず 409 stale になる
     if ((await routeRev(route.data)) !== rev) throw new ApiError(409, "stale");
     const parsed = parseRouteData(JSON.parse(route.data), deps.resources.lookup);
     if (!parsed.ok) throw new Error(`保存済みの路線データが検査に通りません: ${parsed.error}`);
@@ -213,14 +220,14 @@ export function printApi(deps: Deps) {
     // 待ちの上限・回数上限の判定、発行番号、追加を1つの batch で
     const results = await db.batch<{ id: number; issue_no: number }>([
       sweepOrphansStatement(db, now),
-      ...enqueueStatements(db, { routeId, clientId, requestId, eventCode, snapshot: JSON.stringify(snapshot), now: iso(now) }),
+      ...enqueueStatements(db, { routeId, clientId, requestId, eventCode, snapshot: JSON.stringify(snapshot), now: iso(now), routeData: route.data }),
     ]);
     const created = results[results.length - 1].results[0];
     if (!created) {
       // 同時に届いた同じ申し込みに先を越された
       const again = await existingJob(db, clientId, requestId);
       if (again) return c.json(await replayResponse(db, again, routeId, editKey, opts));
-      throw await rejectReason(db, clientId, eventCode, routeId, now);
+      throw await rejectReason(db, clientId, eventCode, routeId, rev, now);
     }
 
     // 発行番号が決まったので画像を組み立てて保存する。どちらかが失敗したら印刷を消し、回数を消費しない

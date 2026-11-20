@@ -94,6 +94,90 @@ describe("#1 結果不明の申し込みの送り直し", () => {
     expect(p.printRelation(b)).toBe("other");
     p.stopPolling();
   });
+
+  it("A の申し込みが届かず、B に変えて保存せずに送り直すと、先に B を保存し、A は新しく作られず B が 1 件だけ印刷される", async () => {
+    const { server, p } = setup();
+    const a = data("前の線");
+    const b = data("あとの線");
+    expect(await p.save(a)).toBe(true);
+    server.dropOnce();
+    expect(await p.requestPrint(a, "CODE1")).toBe(false);
+    const pending = p.store.get().print!;
+    expect(pending.jobId).toBeNull();
+    const n = server.calls.length;
+    expect(await p.requestPrint(b, "CODE1")).toBe(true);
+    const after = server.calls.slice(n);
+    // 送り直しより前に、押した時点の内容（B）を保存する
+    expect(after[0].method).toBe("PUT");
+    expect((after[0].body!.data as RouteData).name).toBe("あとの線");
+    const posts = printPosts(server);
+    // 送り直しは元の requestId と元の rev（stale）。そのあと新しい requestId と B の rev で 1 回だけ
+    expect(posts).toHaveLength(3);
+    expect(posts[1].body).toMatchObject({ requestId: pending.requestId, rev: revOf(a) });
+    expect(posts[2].body!.requestId).not.toBe(pending.requestId);
+    expect(posts[2].body!.rev).toBe(revOf(b));
+    expect(server.jobs.size).toBe(1);
+    const job = expectTruthful(server, p, b);
+    expect((job.data as RouteData).name).toBe("あとの線");
+    expect(p.printRelation(b)).toBe("same");
+    p.stopPolling();
+  });
+
+  it("A の申し込みが処理されていて応答だけ失った場合、B に変えて保存せずに送り直すと、B を保存したうえで A の印刷の再生（前の内容）になる", async () => {
+    const { server, p } = setup();
+    const a = data("前の線");
+    const b = data("あとの線");
+    await p.save(a);
+    server.failOnce();
+    expect(await p.requestPrint(a, "CODE1")).toBe(false);
+    const pending = p.store.get().print!;
+    expect(server.jobs.size).toBe(1);
+    expect(await p.requestPrint(b, "CODE1")).toBe(true);
+    const posts = printPosts(server);
+    expect(posts).toHaveLength(2);
+    expect(posts[1].body).toMatchObject({ requestId: pending.requestId, rev: revOf(a) });
+    // 新しい印刷は作られない
+    expect(server.jobs.size).toBe(1);
+    const id = p.store.get().saved!.id!;
+    expect((server.routes.get(id)!.data as RouteData).name).toBe("あとの線");
+    const job = expectTruthful(server, p, b);
+    expect((job.data as RouteData).name).toBe("前の線");
+    expect(p.printRelation(b)).toBe("other");
+    p.stopPolling();
+  });
+
+  it("送り直しの前の保存（B）に失敗したら送らず、結果不明の記録（元の requestId と rev）を残す", async () => {
+    const { server, p } = setup();
+    const a = data("前の線");
+    const b = data("あとの線");
+    await p.save(a);
+    server.dropOnce();
+    expect(await p.requestPrint(a, "CODE1")).toBe(false);
+    const pending = p.store.get().print!;
+    server.override(() => server.json(500, { error: "internal" }));
+    expect(await p.requestPrint(b, "CODE1")).toBe(false);
+    expect(printPosts(server)).toHaveLength(1);
+    expect(p.store.get().print).toMatchObject({ requestId: pending.requestId, rev: pending.rev, jobId: null });
+    expect(p.store.get().printError).not.toBeNull();
+    expect(server.jobs.size).toBe(0);
+  });
+
+  it("内容を変えずに送り直すと、保存し直さず、元の requestId と元の rev で A が作られる", async () => {
+    const { server, p } = setup();
+    const a = data("前の線");
+    await p.save(a);
+    server.dropOnce();
+    expect(await p.requestPrint(a, "CODE1")).toBe(false);
+    const pending = p.store.get().print!;
+    const n = server.calls.length;
+    expect(await p.requestPrint(a, "CODE1")).toBe(true);
+    expect(server.calls.slice(n).map((c) => c.method)).toEqual(["POST"]);
+    expect(printPosts(server)[1].body).toMatchObject({ requestId: pending.requestId, rev: revOf(a) });
+    expect(server.jobs.size).toBe(1);
+    const job = expectTruthful(server, p, a);
+    expect((job.data as RouteData).name).toBe("前の線");
+    p.stopPolling();
+  });
 });
 
 describe("#2 保存の応答を受け取りそこねた", () => {

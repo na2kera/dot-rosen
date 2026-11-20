@@ -367,11 +367,12 @@ describe("指摘6: 結果が分からない申し込みのあとで内容を変�
     const n = server.calls.length;
     expect(await p.requestPrint(b, "OTHER")).toBe(true);
     const sent = server.calls.slice(n);
-    expect(sent.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /api/print"]);
-    expect(sent[0].body).toMatchObject({ requestId: pending.requestId, eventCode: "CODE1", routeId: pending.routeId });
+    // 送り直しの前に、押した時点の内容を保存する（画面の決まり 1）
+    expect(sent.map((c) => `${c.method} ${c.path}`)).toEqual([`PUT /api/routes/${pending.routeId}`, "POST /api/print"]);
+    expect(sent[1].body).toMatchObject({ requestId: pending.requestId, eventCode: "CODE1", routeId: pending.routeId });
     expect(server.jobs.size).toBe(1);
     // 記録は前の内容のもの。今の内容とは違うと分かる
-    expect(p.printMatches(a)).toBe(true);
+    expect(p.printRelation(b)).toBe("other");
     expect(p.printMatches(b)).toBe(false);
     p.stopPolling();
   });

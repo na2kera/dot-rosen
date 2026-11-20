@@ -6,6 +6,7 @@ import {
   apply,
   claimAndRead,
   createRoute,
+  currentEventCode,
   currentRev,
   DUMMY_REV,
   json,
@@ -128,21 +129,64 @@ describe("印刷の申し込みの rev", () => {
     expect((await apply(h, { id: r.id, editKey: token() }, { rev: DUMMY_REV })).status).toBe(403);
   });
 
-  it("確かめたあと追加の直前に PUT が来ても、刷られる snapshot は確かめた内容", async () => {
+  it("確かめたあと追加の直前に PUT が来たら、印刷は作らず 409 stale。回数も発行番号も消費しない", async () => {
     const r = await createRoute(h, routeData({ name: "確かめた" }));
     expect(r.rev).toMatch(REV_RE);
     h.beforeQuery(ENQUEUE, async () => {
       expect((await put(r, routeData({ name: "あとから" }))).status).toBe(200);
     });
     const res = await apply(h, r, { rev: r.rev });
-    expect(res.status).toBe(200);
-    const body = await json<PrintRes>(res);
-    expect(body.rev).toBe(r.rev);
-    const snap = await snapshotOf(body.jobId);
-    expect(snap.route.name).toBe("確かめた");
-    expect(snap.rev).toBe(r.rev);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "stale" });
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs")).toBe(0);
+    expect(await counter()).toBe(0);
     // 保存されている内容は上書き後のもの
     expect(await currentRev(h, r.id)).not.toBe(r.rev);
+  });
+
+  it("確かめたあと追加の直前に同じ内容で上書きされても（rev が同じ）、そのまま追加する", async () => {
+    const r = await createRoute(h, routeData({ name: "確かめた" }));
+    h.beforeQuery(ENQUEUE, async () => {
+      expect((await put(r, routeData({ name: "確かめた" }))).status).toBe(200);
+    });
+    const res = await apply(h, r, { rev: r.rev });
+    expect(res.status).toBe(200);
+    expect((await json<PrintRes>(res)).rev).toBe(r.rev);
+  });
+
+  it("遅れた最初の申し込み（r1・A）は、stale の再送と B の申し込み（r2）のあとに再開しても印刷を作らず 409 stale", async () => {
+    const r = await createRoute(h, routeData({ name: "A線" }));
+    const revA = r.rev;
+    const clientId = token();
+    const r1 = token();
+    const r2 = token();
+    // 回数枠を 2 にする（枠が 1 だと回数上限で止まり、この穴が見えない）
+    const code = await currentEventCode(h);
+    await h.db.prepare("INSERT INTO print_grants (client_id, event_code, extra) VALUES (?1, ?2, 1)").bind(clientId, code).run();
+    let revB = "";
+    let r2Body: PrintRes | null = null;
+    h.beforeQuery(ENQUEUE, async () => {
+      // r1 が rev の照合を通ったあと、待ちへの追加の前で遅れている間に:
+      expect((await put(r, routeData({ name: "B線" }))).status).toBe(200);
+      revB = (await currentRev(h, r.id))!;
+      // r1・A の rev の再送は、印刷が見つからず stale
+      const resend = await apply(h, r, { clientId, requestId: r1, rev: revA });
+      expect(resend.status).toBe(409);
+      expect(await resend.json()).toEqual({ error: "stale" });
+      // 画面は新しい requestId で B を申し込み、200
+      const again = await apply(h, r, { clientId, requestId: r2, rev: revB });
+      expect(again.status).toBe(200);
+      r2Body = await json<PrintRes>(again);
+    });
+    const late = await apply(h, r, { clientId, requestId: r1, rev: revA });
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({ error: "stale" });
+    // 印刷は r2 の B の 1 件だけ。発行番号は 1 つだけ進む
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs")).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs WHERE request_id = ?1", r2)).toBe(1);
+    expect(r2Body).toMatchObject({ issueNo: 1, rev: revB });
+    expect((await snapshotOf(r2Body!.jobId)).route.name).toBe("B線");
+    expect(await counter()).toBe(1);
   });
 
   it("同じ requestId の再送は、rev が違っても元の印刷（元の rev）を 200 で返す", async () => {

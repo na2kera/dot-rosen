@@ -13,6 +13,7 @@
 | `pnpm print:bench` | `tools/bench-print.ts`。`POST /api/print` の計算（本文の検査、路線データの検査、カードの描画、生データ）の時間を、新しいプロセスで 7 回測る |
 | `pnpm printer:fake` | `tools/fake-printer.ts`。プリンタの代わりに claim → rows → done を回し、受け取った画像を `tools/out/printed/` に PNG（と生データ .bin）で保存する。`PRINTER_TOKEN=... pnpm printer:fake --url http://127.0.0.1:5182 --once`。`--fail <理由>` で失敗の報告、`--no-done` で報告しない |
 | `pnpm raster:png` | `tools/raster-to-png.ts`。プリンタ用の生データ（48 × 高さ バイト）を PNG にする。`pnpm raster:png <入力.bin> [出力.png] [--scale 2]` |
+| `pnpm poster:build --url <URL>` | `tools/poster.ts`。イベント会場に貼る A4 横のポスター（3508×2480、300dpi）を `tools/out/poster/poster-a4-landscape.png` に出す（`--out` で変更）。QR に会場コード入りの URL が入るので、出力はコミットしない |
 
 ### サーバーの確認用の開発サーバー
 

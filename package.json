@@ -21,6 +21,7 @@
     "parts:audit": "node tools/run.mjs tools/parts-audit.ts",
     "sprites:bench": "node tools/run.mjs tools/bench-sprites.ts",
     "card:sheet": "node tools/run.mjs tools/card-sheet.ts",
+    "poster:build": "node tools/run.mjs tools/poster.ts",
     "card:bench": "node tools/run.mjs tools/bench-card.ts",
     "print:bench": "node tools/run.mjs tools/bench-print.ts",
     "printer:fake": "node tools/run.mjs tools/fake-printer.ts",

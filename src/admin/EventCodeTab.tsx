@@ -73,6 +73,7 @@ export function EventCodeTab({ code, api, isBusy, action, onLogout, logoutBusy }
             <Button onClick={() => void copyText(url).then((ok) => (ok ? toast("URL をコピーしました") : toast("コピーできませんでした。長押しで選んでください", { tone: "alert" })))}>
               URL をコピー
             </Button>
+            <Button onClick={() => window.open(url, "_blank", "noopener")}>この端末でひらく</Button>
             <Button
               icon="down"
               disabled={saving}

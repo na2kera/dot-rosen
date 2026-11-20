@@ -17,6 +17,7 @@ import { useStore } from "../../store/use-store.ts";
 import { Button } from "../../ui/Button.tsx";
 import { Panel } from "../../ui/Panel.tsx";
 import { toast } from "../../ui/Toast.tsx";
+import { PRINT_VENUE_GUIDE, printPanelMode, type EventState } from "./print-panel-mode.ts";
 
 export function FinishStep() {
   const { data, ui } = useApp();
@@ -181,8 +182,6 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
 
 // ---- 印刷 ----
 
-type EventState = "none" | "checking" | "open" | "closed" | "invalid" | "error";
-
 /** 会場コードの確認は、アプリを開いている間に1回だけ（違うコードは失敗回数に数えられるため） */
 let eventCheck: { code: string; promise: Promise<EventState> } | null = null;
 
@@ -232,8 +231,14 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
   const rec = pub.print;
   const code = getEventCode(storage);
 
-  // 申し込みが無く、会場の QR コードから開いていないときは出さない
-  if (!rec && (event === "none" || event === "invalid")) return null;
+  // 申し込みが無く、使える会場コードも無いとき（QR コードから開いていない、または古いコード）は、ボタンの代わりに会場の案内を出す
+  const mode = printPanelMode(rec !== null, event);
+  if (mode === "guide")
+    return (
+      <Panel title="印刷する" className="print">
+        <p className="text-weak">{PRINT_VENUE_GUIDE}</p>
+      </Panel>
+    );
 
   const start = async () => {
     if (!data || !code) return;

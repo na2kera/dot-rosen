@@ -46,7 +46,6 @@ type RouteData = {
 | 403 | 編集の鍵が違う（`forbidden`）、会場コードが違う（`invalid_code`） |
 | 404 | 無い、非公開（`not_found`） |
 | 409 | 今の状態ではできない（`conflict`）、回数上限（`limit_reached`）、受付停止中（`not_accepting`）、待ちが満杯（`queue_full`）、保存されている内容が申し込みの版と違う（`stale`） |
-| 410 | 期限切れ（`expired`） |
 | 413 | 本文が大きすぎる（`too_large`） |
 | 429 | 回数制限（`rate_limited`）。`Retry-After` を付ける |
 | 500 | 予期しない失敗（`internal`）。詳細は応答に出さない |
@@ -71,7 +70,7 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 
 | 表 | 主な列 |
 |---|---|
-| `routes` | `id`、`edit_key_hash`（一意）、`data`（RouteData の JSON）、`created_at`、`updated_at`、`expires_at`、`hidden` |
+| `routes` | `id`、`edit_key_hash`（一意）、`data`（RouteData の JSON）、`created_at`、`updated_at`、`hidden` |
 | `print_jobs` | `id`（連番）、`route_id`、`client_id`、`request_id`、`event_code`、`status`、`issue_no`、`sort_key`、`snapshot`（申し込み時点の RouteData と印字する日付・URL の JSON）、`raster`（白黒の生データ。終わったら NULL）、`height`、`created_at`、`claimed_at`、`heartbeat_at`、`finished_at`、`error` |
 | `print_grants` | `client_id`、`event_code`、`extra`（追加で許可した回数） |
 | `settings` | `key`、`value`（`event_code`、`accepting`、`printer_last_seen`、`issue_counter`） |
@@ -83,9 +82,8 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
   - `failed` の `error` が `timeout` のものは「結果が分からない」印刷（紙は出たが報告が届かなかった可能性がある）。自動では刷り直さず、主催者が管理画面で判断する。
 - `sort_key`: 待ちの順番。通常は `id` と同じ値、再印刷は待ちの先頭より小さい値。
 - 時刻は UTC の ISO 8601 文字列。
-- 有効期限は最初の保存から `EXPIRY_DAYS` 日（既定 30。Worker の設定値）。上書きしても延びない。
-- 1日1回の定期実行（`scheduled`）で消すもの: 期限切れの路線とその印刷記録、終わってから 30 日たった印刷記録、古い `rate_limits`。
-  - ただし、`queued` か `printing` の印刷が残っている路線は、その印刷が終わるまで消さない（受け付けた印刷は最後まで刷る）。公開 API は `expires_at` で期限を判定するので、消すのが遅れても期限切れの路線は 410 のまま。
+- **路線に有効期限は無い**（2026-11-20、Issue #1 で廃止）。作った人が消すか、主催者が非公開にするまで残る。`routes.expires_at` の列と索引は `migrations/0002` で落とす。`EXPIRY_DAYS` の設定値、410 `expired`、応答の `expiresAt`・`expiryDays` も無くす。
+- 1日1回の定期実行（`scheduled`）で消すもの: 終わってから 30 日たった印刷記録、古い `rate_limits`。路線は消さない。
 - 印刷画像の高さは最大 3,200 行（約 154KB）。超える画像は作らない。
 
 ## 4. 公開 API（来場者の画面から）
@@ -93,10 +91,10 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 | メソッドとパス | 内容 |
 |---|---|
 | `GET /api/health` | `{ ok: true }` |
-| `GET /api/config` | 今のサーバーの設定値 `{ card: { monoSet, sideLayout }, expiryDays }`。認証なし |
-| `POST /api/routes` | 本文 `{ data, editKey }` → `{ id, expiresAt, rev }` |
-| `GET /api/routes/:id` | `{ id, data, expiresAt, rev }`。無い・非公開は 404、期限切れは 410 |
-| `PUT /api/routes/:id` | ヘッダ `X-Edit-Key`、本文 `{ data }` → `{ ok: true, expiresAt, rev }` |
+| `GET /api/config` | 今のサーバーの設定値 `{ card: { monoSet, sideLayout } }`。認証なし |
+| `POST /api/routes` | 本文 `{ data, editKey }` → `{ id, rev }` |
+| `GET /api/routes/:id` | `{ id, data, rev }`。無い・非公開は 404 |
+| `PUT /api/routes/:id` | ヘッダ `X-Edit-Key`、本文 `{ data }` → `{ ok: true, rev }` |
 | `DELETE /api/routes/:id` | ヘッダ `X-Edit-Key` → `{ ok: true }`。待ちの印刷も取り消す |
 | `GET /api/event?code=...` | `{ valid, accepting }` |
 | `POST /api/print` | 本文 `{ routeId, editKey, eventCode, clientId, requestId, rev }` → `{ jobId, issueNo, ahead, status, card: { monoSet, sideLayout }, rev, issuedOn }` |
@@ -104,14 +102,14 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 
 ### サーバーの設定値（`GET /api/config`）
 
-- 応答: `{ "card": { "monoSet": "light" | "bold", "sideLayout": "two-x1" | "lead-x2" | "two-x2-rotated" }, "expiryDays": number }`。値は `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`・`EXPIRY_DAYS`（不正なら既定の bold・two-x1・30）。`Cache-Control: no-store`。
+- 応答: `{ "card": { "monoSet": "light" | "bold", "sideLayout": "two-x1" | "lead-x2" | "two-x2-rotated" } }`。値は `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`（不正なら既定の bold・two-x1）。`Cache-Control: no-store`。
 - 画面は起動時（データの読み込みと同じとき）に取り、印刷プレビュー（ステップ3の模様、ステップ4と路線ページの路線カード）をこの見た目で描く。カラー版は側面の置き方だけ合わせる。取れなければ既定の bold・two-x1 で描く（エラーにはしない）。
 
 ### 路線の保存
 
 - **編集の鍵（`editKey`）は画面が作る。** 画面は鍵を作って端末に保存してから `POST` する。サーバーは SHA-256 だけを保存する。
 - 同じ `editKey` で `POST` がもう一度来たら、新しく作らずに、その路線を上書きして同じ `id` を返す（応答を受け取りそこねて送り直しても、路線が増えない）。
-- `PUT` と `DELETE` は、鍵が違えば 403、期限切れは 410、非公開は 404。
+- `PUT` と `DELETE` は、鍵が違えば 403、無い・非公開は 404。
 - 「1人1路線」は画面上の決まりで、サーバーは強制しない。
 - **版の印（`rev`）はサーバーが作る。** 保存されている `data` の文字列（サーバーが検査して整えたあとの JSON）の SHA-256 を 16 進にした先頭 16 文字。列は増やさず、返すたびに計算する。同じ内容なら同じ印になる。
   - 画面は、保存の応答で受け取った `rev` を「保存ずみの内容」と一緒に端末に覚える。画面が自分で計算してはいけない（サーバーが整えた結果と画面の持つ形が同じとは限らない）。
@@ -119,7 +117,7 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
 
 ### 印刷の申し込み
 
-- 確かめる順: 回数制限 → 会場コード（違えば 403 `invalid_code`）→ 受付中か（409 `not_accepting`）→ 路線があり、期限内で、非公開でなく、`editKey` が合うか → 待ちが満杯でないか（`queued` が 30 件以上なら 409 `queue_full`）→ このクライアントの回数上限（409 `limit_reached`）。
+- 確かめる順: 回数制限 → 会場コード（違えば 403 `invalid_code`）→ 受付中か（409 `not_accepting`）→ 路線があり、非公開でなく、`editKey` が合うか → 待ちが満杯でないか（`queued` が 30 件以上なら 409 `queue_full`）→ このクライアントの回数上限（409 `limit_reached`）。
 - 回数上限: クライアントごと・会場コードごとに 1 + `print_grants.extra`。数えるのは `canceled` と `failed` 以外の印刷。会場コードを作り直すと、数え直しになる。
 - **`requestId` は画面が押すたびに作るランダムな文字列。** 同じ `(clientId, requestId)` の申し込みがもう一度来たら、新しく作らずに元の印刷を返す。
 - **申し込みには版の印（`rev`、16 桁の 16 進）が必須。** 無い・形が違えば 400。画面は「いま画面にある内容」を保存したときに受け取った `rev` を付ける。
@@ -136,12 +134,12 @@ D1 の小さな表で数える。会場では同じ回線を多人数で共有�
     5. 端末に記録する発行日は、応答の `issuedOn` を使う。
 - 発行番号の採番、回数上限の判定、待ちへの追加は、D1 の `batch`（1つのトランザクション）と条件つきの文で行い、同時に来ても番号の重複や上限の超過が起きないようにする。
 - 印刷用の画像は、申し込みの時点でサーバーが保存済みの路線データから組み立てる。画面は先に路線を保存してから申し込む。
-- `snapshot` に、そのとき使った路線データ、その `rev`、発行日（日本時間の「2026.11.20」）、期限の日付、URL、印刷の見た目（`monoSet`・`sideLayout`。そのときの `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`）を保存する。再印刷はこの `snapshot` から組み立て直すので、同じ発行番号で同じ内容になる。あとから設定を変えても、過去の印刷の再印刷（見た目の指定なし）は変わらない。
+- `snapshot` に、そのとき使った路線データ、その `rev`、発行日（日本時間の「2026.11.20」）、URL、印刷の見た目（`monoSet`・`sideLayout`。そのときの `CARD_MONO_SET`・`CARD_SIDE_LAYOUT`）を保存する。再印刷はこの `snapshot` から組み立て直すので、同じ発行番号で同じ内容になる。あとから設定を変えても、過去の印刷の再印刷（見た目の指定なし）は変わらない。
 - 応答の `card` は、その印刷で使う見た目（`snapshot` の値）。同じ `requestId` の再送にも同じものを返す。画面は申し込んだあとの印刷プレビューをこの見た目で描く。
 - 画像の組み立てに失敗したら、印刷を作らず 500 を返す（回数を消費しない）。
 - `ahead` は、自分より前にある `queued` と `printing` の件数。
 - 画像の準備が終わっていない印刷に対する同じ `requestId` の再送には、409 `conflict` と `Retry-After: 2` を返す。画面は少し待って同じ `requestId` で送り直す。
-- 路線が存在し、非公開でなく、期限内であることは、待ちへ追加する文の中でも確かめる（非公開化や削除と同時に来ても、取り消しのあとに印刷が増えない）。
+- 路線が存在し、非公開でないことは、待ちへ追加する文の中でも確かめる（非公開化や削除と同時に来ても、取り消しのあとに印刷が増えない）。
 - 画面は状態を問い合わせ、`done`・`failed`・`canceled` になったら問い合わせをやめる。間隔は、`ahead` が 4 以下なら 5 秒、5 以上なら 15 秒（リクエスト数を抑えるため）。画面が裏に回っている間は問い合わせない。
 
 ## 5. プリンタ用 API（ATOM Lite から）
@@ -203,7 +201,7 @@ ATOM Lite はメモリが小さく、プリンタへの転送も遅いので、�
 - 指定した項目は、その再印刷だけその見た目で画像を組み立てる。指定しない項目は元の印刷の `snapshot` の見た目（元の記録に見た目が無い古いものは、今のサーバーの設定）。
 - 不正な値（未知の文字列、文字列でない、`null`）や、オブジェクトでない本文は 400（印刷は作らない）。
 - 新しい印刷の `snapshot` には、実際に使った見た目を入れる（その再印刷をさらに指定なしで再印刷すると、同じ見た目になる）。
-- 発行番号・待ちの先頭に入ること・回数上限に数えないこと・刷れない条件（期限切れ・非公開など）は、指定の有無で変わらない。
+- 発行番号・待ちの先頭に入ること・回数上限に数えないこと・刷れない条件（非公開など）は、指定の有無で変わらない。
 - `/api/admin/state` の `jobs` の見た目は `snapshot` から読む。見た目の無い古い記録は、今の設定（指定なしの再印刷で使う見た目）で埋めて返す。
 
 ## 7. 秘密の設定値（Worker）
@@ -226,5 +224,7 @@ ATOM Lite はメモリが小さく、プリンタへの転送も遅いので、�
 ## 9. 画面で伝えること（公開運用のため）
 
 - 保存の前に「この URL を知っている人は誰でも見られます」と表示する。
-- 保存後は「◯月◯日まで見られます。画像は早めに保存してね」と表示する。
-- 路線ページに「この路線を消す」（作った端末だけ）を用意する。
+- 期限の案内は出さない（期限は無い）。路線カードにも期限は印字しない。古い印刷の `snapshot` に期限の日付が残っていても、再印刷では印字しない。
+- 「この路線を消す」（作った端末だけ）を、路線ページと、「できあがり」の保存の欄の下（保存ずみのときだけ。目立たない小さな扱い）に用意する。消す処理は同じものを使う。確認を出してから消し、URL は見られなくなり、待ちの印刷は取り消される。作りかけの内容は端末に残る。
+- 「できあがり」の「印刷する」の欄は常に出す（Issue #2）。会場コードを持っておらず、印刷の記録も無いときは、ボタンの代わりに「印刷は イベント会場で できます。会場の QR コードを 読みこんでね」と出す（会場コードの確認の通信はしない）。
+- 管理画面の「会場コード」タブに「この端末でひらく」を置く。会場コードつきの URL を新しいタブで開く。

@@ -2,7 +2,7 @@
 import { Hono } from "hono";
 import { parseRouteData, type RouteData } from "../../shared/route/index.ts";
 import { addDays, expiryDays, iso } from "../lib/config.ts";
-import { newRouteId, safeEqual, sha256Hex } from "../lib/crypto.ts";
+import { newRouteId, routeRev, safeEqual, sha256Hex } from "../lib/crypto.ts";
 import { ApiError, asRecord, clientIp, EDIT_KEY_RE, notFound, readJson, ROUTE_ID_RE, str } from "../lib/http.ts";
 import { acquireAttempt } from "../lib/rate-limit.ts";
 import type { AppEnv, Db, Deps, Resources } from "../lib/types.ts";
@@ -69,11 +69,12 @@ export function routesApi(deps: Deps) {
          VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)
          ON CONFLICT (edit_key_hash) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
            WHERE routes.hidden = 0 AND routes.expires_at > excluded.updated_at
-         RETURNING id, expires_at`,
+         RETURNING id, expires_at, data`,
       )
       .bind(newRouteId(), hash, JSON.stringify(data), nowIso, iso(addDays(now, expiryDays(c.env))))
-      .first<{ id: string; expires_at: string }>();
-    if (row) return c.json({ id: row.id, expiresAt: row.expires_at });
+      .first<{ id: string; expires_at: string; data: string }>();
+    // rev は上書き後に保存されている文字列から作る
+    if (row) return c.json({ id: row.id, expiresAt: row.expires_at, rev: await routeRev(row.data) });
     const existing = await db.prepare("SELECT hidden, expires_at FROM routes WHERE edit_key_hash = ?1").bind(hash).first<{ hidden: number; expires_at: string }>();
     if (!existing || existing.hidden) throw notFound();
     throw new ApiError(410, "expired");
@@ -85,7 +86,7 @@ export function routesApi(deps: Deps) {
     const row = await loadRoute(c.env.DB, id);
     if (!row || row.hidden) throw notFound();
     if (row.expires_at <= iso(deps.now())) throw new ApiError(410, "expired");
-    return c.json({ id: row.id, data: JSON.parse(row.data) as RouteData, expiresAt: row.expires_at });
+    return c.json({ id: row.id, data: JSON.parse(row.data) as RouteData, expiresAt: row.expires_at, rev: await routeRev(row.data) });
   });
 
   app.put("/routes/:id", async (c) => {
@@ -101,16 +102,16 @@ export function routesApi(deps: Deps) {
       .prepare(
         `UPDATE routes SET data = ?1, updated_at = ?2
          WHERE id = ?3 AND edit_key_hash = ?4 AND hidden = 0 AND expires_at > ?2
-         RETURNING expires_at`,
+         RETURNING expires_at, data`,
       )
       .bind(JSON.stringify(data), nowIso, id, route.edit_key_hash)
-      .first<{ expires_at: string }>();
+      .first<{ expires_at: string; data: string }>();
     if (!row) {
       // 確かめてから書くまでの間に、非公開・期限切れ・削除になった
       await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"), now);
       throw new ApiError(409, "conflict");
     }
-    return c.json({ ok: true, expiresAt: row.expires_at });
+    return c.json({ ok: true, expiresAt: row.expires_at, rev: await routeRev(row.data) });
   });
 
   app.delete("/routes/:id", async (c) => {

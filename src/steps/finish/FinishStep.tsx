@@ -11,7 +11,7 @@ import { previewLook } from "../../card/card-input.ts";
 import { routeUrl, useBitmapFont, useCard, useServerCardLook } from "../../card/useCard.ts";
 import { localMonthDay } from "../../store/dates.ts";
 import { getEventCode } from "../../store/device.ts";
-import { isTerminal, type PublishState } from "../../store/publish-store.ts";
+import { isTerminal, PRINT_RECORD_REASON, type PublishState } from "../../store/publish-store.ts";
 import { routeErrorStep, routeErrorText } from "../../store/route-errors.ts";
 import { useStore } from "../../store/use-store.ts";
 import { Button } from "../../ui/Button.tsx";
@@ -33,10 +33,11 @@ export function FinishStep() {
   const status = publish.saveStatus(routeData);
   // QR コードは、今の内容が保存ずみの内容と同じときだけ付ける（違う内容に、前の路線の URL を付けない）
   const clean = status === "clean";
-  // 印刷を申し込んだ内容と同じなら、発行番号と申し込んだ日を入れる
+  // 印刷を申し込んだ内容と同じなら、発行番号と発行日を入れる（印刷が使った内容の印が分からない古い印刷は、同じとも違うとも決めない）
   const rec = pub.print;
   const printed = rec !== null && rec.jobId !== null && rec.status !== "canceled" && rec.status !== "failed";
-  const printedSame = printed && publish.printMatches(routeData);
+  const relation = publish.printRelation(routeData);
+  const printedSame = printed && relation === "same";
   // 申し込んだ内容は申し込んだときの見た目で、それ以外は今のサーバーの設定で描く
   const serverLook = useServerCardLook();
   const look = previewLook(printedSame ? rec!.card : null, serverLook);
@@ -69,7 +70,7 @@ export function FinishStep() {
           </div>
         ) : (
           <>
-            {printed && !printedSame && <p className="finish__note finish__note--alert">印刷したときから内容が変わっています</p>}
+            {printed && relation === "other" && <p className="finish__note finish__note--alert">印刷したときから内容が変わっています</p>}
             {status === "dirty" && <p className="finish__note">保存しなおすと QR コードが付きます</p>}
             <CardView card={card} />
           </>
@@ -243,7 +244,7 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
 
   const active = rec !== null && rec.jobId !== null && !isTerminal(rec.status);
   // 申し込んだあとに内容を変えた
-  const otherContent = rec !== null && rec.jobId !== null && rec.fingerprint !== "" && !publish.printMatches(data);
+  const otherContent = rec !== null && rec.jobId !== null && publish.printRelation(data) === "other";
   const unknown = rec !== null && rec.jobId === null;
   // 印刷ずみでも押せる（係の人が回数を増やしたときのため。増えていなければ「もう印刷ずみ」と出る）
   const canRequest = event === "open" && !active;
@@ -281,7 +282,9 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
         <p className="text-alert">
           {pub.printError.code === "expired"
             ? "保存した路線の期限が切れていました。もういちど押すと、新しい URL で保存してから申し込みます"
-            : errorMessage(pub.printError)}
+            : pub.printError.code === "storage" && pub.printError.reason === PRINT_RECORD_REASON
+              ? "この端末に保存できないため、印刷を申し込めません（プライベートモードや空き容量を確かめてね）"
+              : errorMessage(pub.printError)}
         </p>
       )}
     </Panel>

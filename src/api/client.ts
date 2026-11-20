@@ -12,6 +12,8 @@ export type ApiErrorCode =
   | "limit_reached"
   | "not_accepting"
   | "queue_full"
+  // 保存されている内容が、申し込みの版の印（rev）と違う
+  | "stale"
   | "expired"
   | "too_large"
   | "rate_limited"
@@ -48,6 +50,7 @@ const KNOWN: readonly string[] = [
   "limit_reached",
   "not_accepting",
   "queue_full",
+  "stale",
   "expired",
   "too_large",
   "rate_limited",
@@ -101,15 +104,16 @@ export function createApi(fetchFn: FetchLike, base = "") {
   const enc = encodeURIComponent;
 
   return {
-    createRoute: (data: RouteData, editKey: string) => call<{ id: string; expiresAt: string }>("POST", "/api/routes", { body: { data, editKey } }),
-    getRoute: (id: string) => call<{ id: string; data: unknown; expiresAt: string }>("GET", `/api/routes/${enc(id)}`),
+    // rev は版の印（サーバーが作る。形は src/store/publish-store.ts で確かめる）
+    createRoute: (data: RouteData, editKey: string) => call<{ id: string; expiresAt: string; rev?: unknown }>("POST", "/api/routes", { body: { data, editKey } }),
+    getRoute: (id: string) => call<{ id: string; data: unknown; expiresAt: string; rev?: unknown }>("GET", `/api/routes/${enc(id)}`),
     updateRoute: (id: string, data: RouteData, editKey: string) =>
-      call<{ ok: true; expiresAt: string }>("PUT", `/api/routes/${enc(id)}`, { body: { data }, headers: { "X-Edit-Key": editKey } }),
+      call<{ ok: true; expiresAt: string; rev?: unknown }>("PUT", `/api/routes/${enc(id)}`, { body: { data }, headers: { "X-Edit-Key": editKey } }),
     deleteRoute: (id: string, editKey: string) => call<{ ok: true }>("DELETE", `/api/routes/${enc(id)}`, { headers: { "X-Edit-Key": editKey } }),
     checkEvent: (code: string) => call<{ valid: boolean; accepting: boolean }>("GET", `/api/event?code=${enc(code)}`),
-    requestPrint: (p: { routeId: string; editKey: string; eventCode: string; clientId: string; requestId: string }) =>
-      // card は、その印刷で使う見た目（古いサーバーは返さないので任意）
-      call<PrintProgress & { jobId: number; card?: unknown }>("POST", "/api/print", { body: p }),
+    requestPrint: (p: { routeId: string; editKey: string; eventCode: string; clientId: string; requestId: string; rev: string }) =>
+      // card は、その印刷で使う見た目（古いサーバーは返さないので任意）。rev と issuedOn は、その印刷が実際に使った内容の印と発行日
+      call<PrintProgress & { jobId: number; card?: unknown; rev?: unknown; issuedOn?: unknown }>("POST", "/api/print", { body: p }),
     printStatus: (jobId: number, clientId: string) => call<PrintProgress>("GET", `/api/print/${jobId}?clientId=${enc(clientId)}`),
     /** 今のサーバーの設定値（中身の検査は src/store/server-config.ts） */
     getConfig: () => call<unknown>("GET", "/api/config"),
@@ -145,6 +149,7 @@ export function errorMessage(f: Pick<ApiFailure, "code" | "reason">): string {
       return "路線のデータが大きすぎます";
     case "invalid":
       return (f.reason && routeErrorText(f.reason)) || "送った内容に まちがいがあります";
+    case "stale":
     case "conflict":
       return "いまは できません。少し待って もういちど ためしてね";
     case "internal":

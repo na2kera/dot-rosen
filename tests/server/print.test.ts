@@ -36,7 +36,15 @@ describe("印刷の申し込み", () => {
     const res = await apply(h, r, { clientId });
     expect(res.status).toBe(200);
     const body = await json<PrintRes>(res);
-    expect(body).toEqual({ jobId: expect.any(Number), issueNo: 1, ahead: 0, status: "queued", card: { monoSet: "bold", sideLayout: "two-x1" } });
+    expect(body).toEqual({
+      jobId: expect.any(Number),
+      issueNo: 1,
+      ahead: 0,
+      status: "queued",
+      card: { monoSet: "bold", sideLayout: "two-x1" },
+      rev: r.rev,
+      issuedOn: "2026.11.20",
+    });
     const st = await h.call("GET", `/api/print/${body.jobId}?clientId=${clientId}`);
     expect(await json(st)).toEqual({ status: "queued", ahead: 0, issueNo: 1 });
     // clientId が違えば 404
@@ -192,14 +200,34 @@ describe("印刷の申し込み", () => {
     expect(total!.n).toBe(30);
   });
 
-  it("同じ requestId を同時に 5 回送っても 1 件だけ作る", async () => {
+  it("同じ requestId を同時に 5 回送っても 1 件だけ作る（準備中の 409 は送り直すと同じ印刷に収束する）", async () => {
     const r = await createRoute(h);
     const clientId = token();
     const requestId = token();
-    const res = await Promise.all(Array.from({ length: 5 }, () => apply(h, r, { clientId, requestId })));
-    expect(res.every((m) => m.status === 200)).toBe(true);
-    const ids = new Set((await Promise.all(res.map((m) => json<PrintRes>(m)))).map((b) => b.jobId));
+    const send = () => apply(h, r, { clientId, requestId });
+    // 先行の申し込みが画像を保存する前に再送が着く順番を、必ず 1 件含める（その再送は準備中の 409 が正しい）
+    let early: Response | null = null;
+    h.beforeQuery(/UPDATE print_jobs SET raster = \?1/, async () => {
+      early = await send();
+    });
+    const res = [...(await Promise.all(Array.from({ length: 4 }, send)))];
+    res.push(early!);
+    expect(res).toHaveLength(5);
+    // 初回は 200 か準備中の 409（conflict, Retry-After: 2）。409 だったものは同じ requestId で送り直す
+    const bodies: PrintRes[] = [];
+    for (let m of res) {
+      for (let i = 0; m.status === 409 && i < 10; i++) {
+        expect(m.headers.get("Retry-After")).toBe("2");
+        expect(await m.json()).toEqual({ error: "conflict" });
+        m = await send();
+      }
+      expect(m.status).toBe(200);
+      bodies.push(await json<PrintRes>(m));
+    }
+    expect((early as Response | null)?.status).toBe(409);
+    const ids = new Set(bodies.map((b) => b.jobId));
     expect(ids.size).toBe(1);
+    expect((await h.db.prepare("SELECT COUNT(*) AS n FROM print_jobs").first<{ n: number }>())!.n).toBe(1);
     const counter = await h.db.prepare("SELECT value FROM settings WHERE key = 'issue_counter'").first<{ value: string }>();
     expect(counter!.value).toBe("1");
   });

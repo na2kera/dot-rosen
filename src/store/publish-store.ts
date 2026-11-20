@@ -8,13 +8,21 @@ import { jstDate } from "./dates.ts";
 import type { RandomBytes } from "./device.ts";
 import { safeGet, safeRemove, safeSet, STORAGE_KEYS, type KeyValueStorage } from "./kv-storage.ts";
 
-/** 保存した路線の記録。editKey は POST の前に書き、id は成功してから書く */
+/**
+ * 保存した路線の記録。editKey は POST の前に書き、id は成功してから書く。
+ * 保存ずみかどうかは、サーバーが返した版の印（savedRev）で決める（画面は rev を計算しない）。
+ * 送る前に savedRev を null（結果不明）にして書き、成功の応答で確定する。
+ */
 export type SavedRecord = {
   readonly editKey: string;
   readonly id: string | null;
   readonly expiresAt: string | null;
-  /** 最後に保存できた内容（正規化した RouteData の JSON）。変更があるかの判定に使う */
+  /** savedRev の内容（正規化した RouteData の JSON）。変更があるかの判定に使う */
   readonly savedJson: string | null;
+  /** サーバーが保存の応答で返した版の印。null は結果不明（送っている途中・応答を受け取りそこねた・古い記録） */
+  readonly savedRev: string | null;
+  /** 送っている保存の目印（送る前に書く）。応答を反映するときに、ほかのタブが書き換えていないかを確かめる */
+  readonly pending: string | null;
 };
 
 /** 印刷の申し込みの記録。jobId が null のものは「送ったが結果が分からない」申し込み */
@@ -25,12 +33,16 @@ export type PrintRecord = {
   readonly issueNo: number | null;
   readonly status: PrintStatus | null;
   readonly ahead: number | null;
-  /** 申し込んだときの内容の指紋（routeFingerprint）。今の内容と比べる */
+  /** 申し込んだときの内容の控え（routeFingerprint）。今の内容と同じかの判定には使わない（printedRev を使う） */
   readonly fingerprint: string;
+  /** 申し込みに付けた版の印（結果が分からないときに、同じ rev で送り直すため）。古い記録は null */
+  readonly rev: string | null;
+  /** その印刷が実際に使った内容の版の印（申し込みの応答の rev）。応答前・古い印刷は null */
+  readonly printedRev: string | null;
   /** 申し込んだときの会場コードと編集の鍵（結果が分からないときに、同じ本文で送り直すため） */
   readonly eventCode: string;
   readonly editKey: string;
-  /** 申し込んだ日（日本時間の「2026.11.20」） */
+  /** 発行日（日本時間の「2026.11.20」。申し込みの応答の issuedOn） */
   readonly issuedOn: string | null;
   /** 申し込んだときの印刷の見た目（申し込みの応答、無ければ申し込んだときのサーバーの設定）。古い記録は null */
   readonly card: CardLook | null;
@@ -88,7 +100,10 @@ export function routeFingerprint(data: RouteData): string {
 }
 
 const TOKEN = /^[A-Za-z0-9_-]{16,128}$/;
+/** 版の印（16 桁の 16 進） */
+const REV = /^[0-9a-f]{16}$/;
 const isStr = (v: unknown): v is string => typeof v === "string";
+const isRev = (v: unknown): v is string => isStr(v) && REV.test(v);
 const isNumOrNull = (v: unknown): v is number | null => v === null || (typeof v === "number" && Number.isFinite(v));
 const STATUSES: readonly string[] = ["queued", "printing", "done", "failed", "canceled"];
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -108,7 +123,15 @@ export function readSaved(storage: KeyValueStorage): SavedRecord | null {
   const r = readJson(storage, STORAGE_KEYS.saved);
   if (!r || !isStr(r.editKey) || !TOKEN.test(r.editKey)) return null;
   const opt = (v: unknown) => (isStr(v) ? v : null);
-  return { editKey: r.editKey, id: opt(r.id), expiresAt: opt(r.expiresAt), savedJson: opt(r.savedJson) };
+  return {
+    editKey: r.editKey,
+    id: opt(r.id),
+    expiresAt: opt(r.expiresAt),
+    savedJson: opt(r.savedJson),
+    // rev の無い古い記録は結果不明（次の保存で送り直して rev を得る）
+    savedRev: isRev(r.savedRev) ? r.savedRev : null,
+    pending: isStr(r.pending) && TOKEN.test(r.pending) ? r.pending : null,
+  };
 }
 
 function parsePrint(r: Record<string, unknown>, depth: number): PrintRecord | null {
@@ -123,6 +146,8 @@ function parsePrint(r: Record<string, unknown>, depth: number): PrintRecord | nu
     status,
     ahead: r.ahead,
     fingerprint: isStr(r.fingerprint) ? r.fingerprint : "",
+    rev: isRev(r.rev) ? r.rev : null,
+    printedRev: isRev(r.printedRev) ? r.printedRev : null,
     eventCode: isStr(r.eventCode) ? r.eventCode : "",
     editKey: isStr(r.editKey) ? r.editKey : "",
     issuedOn: isStr(r.issuedOn) ? r.issuedOn : null,
@@ -157,6 +182,12 @@ export type SaveStatus = "none" | "clean" | "dirty" | "expired";
 export type PublishStore = ReturnType<typeof createPublishStore>;
 
 const storageFailure = (): ApiFailure => ({ ok: false, code: "storage", status: 0 });
+/** 印刷の記録を端末に書けなかった（申し込みは送っていない） */
+export const PRINT_RECORD_REASON = "print_record";
+const printRecordFailure = (): ApiFailure => ({ ok: false, code: "storage", status: 0, reason: PRINT_RECORD_REASON });
+
+/** 記録した印刷と今の内容の関係。unknown は判定できない（実際に使った内容の印が無い古い印刷） */
+export type PrintRelation = "same" | "other" | "unknown";
 
 export function createPublishStore(deps: PublishDeps) {
   const { storage, api, random, clientId } = deps;
@@ -207,20 +238,68 @@ export function createPublishStore(deps: PublishDeps) {
   /** 鍵の路線がもう使えない（消された・期限切れ・非公開・鍵違い） */
   const isGone = (f: ApiFailure) => f.code === "not_found" || f.code === "expired" || f.code === "forbidden";
 
+  /**
+   * 保存の成功の応答を反映する。端末の記録が、自分が送る前に書いた結果不明の状態（目印 token）のままのときだけ確定する。
+   * ほかのタブが書き換えていたら、古い応答で上書きせず、結果不明にする（次の保存で送り直す）
+   */
+  function settleSave(token: string, editKey: string, id: string, expiresAt: string, rev: unknown, json: string): boolean {
+    const fresh = readSaved(storage);
+    if (fresh && fresh.pending === token && fresh.editKey === editKey) {
+      if (isRev(rev)) {
+        // 鍵はもう端末にあるので、ここで書けなくても同じ鍵で送り直せば同じ路線に戻れる
+        writeSaved({ editKey, id, expiresAt, savedJson: json, savedRev: rev, pending: null });
+        return true;
+      }
+      // 版の印が無い・形が違う応答は、画面で補わずに結果不明のままにする
+      writeSaved({ editKey, id, expiresAt, savedJson: null, savedRev: null, pending: null });
+      patch({ saveError: { ok: false, code: "internal", status: 0 } });
+      return false;
+    }
+    if (fresh && fresh.editKey === editKey && (fresh.id === null || fresh.id === id)) {
+      // 同じ路線をほかのタブが書いた（どちらの内容がサーバーに残ったか分からない）
+      if (fresh.savedRev !== null || fresh.id === null) writeSaved({ ...fresh, id, expiresAt: fresh.expiresAt ?? expiresAt, savedJson: null, savedRev: null });
+      else patch({ saved: fresh });
+    } else {
+      // ほかのタブが消した・別の路線にした → その記録に従う
+      patch({ saved: fresh });
+    }
+    patch({ saveError: { ok: false, code: "conflict", status: 0 } });
+    return false;
+  }
+
   async function post(data: RouteData, json: string): Promise<boolean> {
     // 鍵は送る前に端末へ書く（応答を受け取りそこねても、同じ鍵で送り直せば同じ路線が返る）。
     // 書けなかったら送らない（あとで編集も削除もできない URL ができてしまうため）
-    let rec = store.get().saved;
-    if (!rec || rec.id !== null) rec = { editKey: randomToken(random), id: null, expiresAt: null, savedJson: null };
-    if (!writeSaved(rec)) {
+    const before = store.get().saved;
+    let rec = before;
+    if (!rec || rec.id !== null) rec = { editKey: randomToken(random), id: null, expiresAt: null, savedJson: null, savedRev: null, pending: null };
+    const token = randomToken(random);
+    if (!writeSaved({ ...rec, pending: token })) {
+      writeSaved(before);
       patch({ saveError: storageFailure() });
       return false;
     }
     const r = await api.createRoute(data, rec.editKey);
-    if (r.ok) {
-      // 鍵はもう端末にあるので、ここで書けなくても同じ鍵で送り直せば同じ路線に戻れる
-      writeSaved({ editKey: rec.editKey, id: r.value.id, expiresAt: r.value.expiresAt, savedJson: json });
-      return true;
+    if (r.ok) return settleSave(token, rec.editKey, r.value.id, r.value.expiresAt, r.value.rev, json);
+    patch({ saveError: r });
+    return false;
+  }
+
+  async function put(rec: SavedRecord & { id: string }, data: RouteData, json: string): Promise<boolean | "gone"> {
+    // 送る前に結果不明にして端末に書く（応答を受け取りそこねたら、前の内容を「保存ずみ」と扱わない）。書けなければ送らない
+    const token = randomToken(random);
+    if (!writeSaved({ ...rec, savedJson: null, savedRev: null, pending: token })) {
+      writeSaved(rec);
+      patch({ saveError: storageFailure() });
+      return false;
+    }
+    const r = await api.updateRoute(rec.id, data, rec.editKey);
+    if (r.ok) return settleSave(token, rec.editKey, rec.id, r.value.expiresAt, r.value.rev, json);
+    if (isGone(r)) return "gone";
+    const fresh = readSaved(storage);
+    if (fresh?.pending === token) {
+      // 通信の失敗・サーバーの問題は結果不明のまま。はっきり断られた（サーバーは変わっていない）なら送る前の記録に戻す
+      writeSaved(r.code === "network" || r.code === "internal" ? { ...fresh, pending: null } : rec);
     }
     patch({ saveError: r });
     return false;
@@ -238,16 +317,9 @@ export function createPublishStore(deps: PublishDeps) {
         return await post(data, json);
       }
       if (rec && rec.id !== null) {
-        if (rec.savedJson === json) return true;
-        const r = await api.updateRoute(rec.id, data, rec.editKey);
-        if (r.ok) {
-          writeSaved({ ...rec, expiresAt: r.value.expiresAt, savedJson: json });
-          return true;
-        }
-        if (!isGone(r)) {
-          patch({ saveError: r });
-          return false;
-        }
+        if (rec.savedRev !== null && rec.savedJson === json) return true;
+        const r = await put({ ...rec, id: rec.id }, data, json);
+        if (r !== "gone") return r;
         // 前の路線はもう使えないので、新しい鍵で作り直す（URL は変わる）
         writeSaved(null);
         return await post(data, json);
@@ -266,17 +338,18 @@ export function createPublishStore(deps: PublishDeps) {
     }
   }
 
-  /** 保存してあり、期限内で、内容が変わっていないか */
+  /** 保存してあり（結果不明でなく）、期限内で、内容が変わっていないか */
   function isSaved(data: RouteData | null): boolean {
     const rec = store.get().saved;
-    return !!rec && rec.id !== null && !isExpired(rec) && data !== null && rec.savedJson === routeJson(data);
+    return !!rec && rec.id !== null && !isExpired(rec) && rec.savedRev !== null && data !== null && rec.savedJson === routeJson(data);
   }
 
   function saveStatus(data: RouteData | null): SaveStatus {
     const rec = store.get().saved;
     if (!rec || rec.id === null) return "none";
     if (isExpired(rec)) return "expired";
-    return data !== null && rec.savedJson === routeJson(data) ? "clean" : "dirty";
+    // 結果不明は「変更あり」（保存しなおすと送り直す）
+    return isSaved(data) ? "clean" : "dirty";
   }
 
   /**
@@ -285,6 +358,8 @@ export function createPublishStore(deps: PublishDeps) {
    */
   async function save(data: RouteData): Promise<boolean> {
     while (saving) await saving;
+    // ほかのタブの保存（結果不明を含む）を拾う
+    refreshSaved();
     if (isSaved(data)) return true;
     const p = doSave(data).finally(() => {
       if (saving === p) saving = null;
@@ -293,23 +368,34 @@ export function createPublishStore(deps: PublishDeps) {
     return p;
   }
 
+  /** 端末の保存状態を結果不明にする（サーバーの内容が端末の記録と違うと分かったとき） */
+  function markUnknown(routeId: string): void {
+    const rec = readSaved(storage) ?? store.get().saved;
+    if (rec && rec.id === routeId && rec.savedRev !== null) writeSaved({ ...rec, savedJson: null, savedRev: null });
+  }
+
   // ---- 印刷の状態の問い合わせ ----
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let polling = false;
+  /** 問い合わせの世代。止めたとき・対象の印刷が変わったときに進め、古い世代の応答は捨てる */
+  let pollGen = 0;
 
   function stopPolling(): void {
     if (pollTimer !== null) clearTimeout(pollTimer);
     pollTimer = null;
     polling = false;
+    pollGen++;
   }
 
   function schedulePoll(): void {
     if (pollTimer !== null) clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => void pollOnce(), pollDelay(store.get().print?.ahead ?? null));
+    const gen = pollGen;
+    pollTimer = setTimeout(() => void pollOnce(gen), pollDelay(store.get().print?.ahead ?? null));
   }
 
-  async function pollOnce(): Promise<void> {
+  async function pollOnce(gen: number): Promise<void> {
+    if (gen !== pollGen) return;
     pollTimer = null;
     const rec = store.get().print;
     if (!rec || rec.jobId === null || isTerminal(rec.status)) {
@@ -319,9 +405,14 @@ export function createPublishStore(deps: PublishDeps) {
     // 裏に回っている間は問い合わせない（表に戻ったら wake で再開）
     if (isHidden()) return;
     const r = await api.printStatus(rec.jobId, clientId);
-    if (!polling) return;
+    // 古い世代の応答は捨てる（新しい世代が自分で次を予約している）
+    if (gen !== pollGen || !polling) return;
     const cur = store.get().print;
-    if (!cur || cur.jobId !== rec.jobId) return;
+    if (!cur || cur.jobId !== rec.jobId) {
+      // 対象が変わった: この応答は捨て、次の問い合わせは確保する（今の対象を見て続けるか決める）
+      if (pollTimer === null) schedulePoll();
+      return;
+    }
     if (r.ok) {
       writePrint({ ...cur, status: r.value.status, ahead: r.value.ahead, issueNo: r.value.issueNo });
       patch({ pollFailing: false });
@@ -345,7 +436,7 @@ export function createPublishStore(deps: PublishDeps) {
     if (!polling || isHidden()) return;
     if (pollTimer !== null) clearTimeout(pollTimer);
     pollTimer = null;
-    void pollOnce();
+    void pollOnce(pollGen);
   }
 
   /** 終わっていない申し込みがあれば、状態の問い合わせを始める（すぐに1回、そのあとは間隔をおいて） */
@@ -353,7 +444,7 @@ export function createPublishStore(deps: PublishDeps) {
     const rec = store.get().print;
     if (polling || !rec || rec.jobId === null || isTerminal(rec.status)) return;
     polling = true;
-    void pollOnce();
+    void pollOnce(pollGen);
   }
 
   // ---- 印刷の申し込み ----
@@ -361,8 +452,8 @@ export function createPublishStore(deps: PublishDeps) {
   let requesting = false;
 
   /** 申し込みを送る（409 conflict = 画像の準備中なら、少し待って同じ本文で送り直す） */
-  async function send(rec: PrintRecord) {
-    const body = { routeId: rec.routeId, editKey: rec.editKey, eventCode: rec.eventCode, clientId, requestId: rec.requestId };
+  async function send(rec: PrintRecord & { rev: string }) {
+    const body = { routeId: rec.routeId, editKey: rec.editKey, eventCode: rec.eventCode, clientId, requestId: rec.requestId, rev: rec.rev };
     let r = await api.requestPrint(body);
     for (let i = 0; i < CONFLICT_RETRIES && !r.ok && r.code === "conflict"; i++) {
       const wait = (r.retryAfter ?? 2) * 1000;
@@ -377,7 +468,17 @@ export function createPublishStore(deps: PublishDeps) {
     if (r.ok) {
       // 応答の見た目（その印刷で実際に使うもの）を優先し、無ければ申し込んだときに覚えた設定のまま
       const card = r.value.card !== undefined && isRecord(r.value.card) ? toCardLook(r.value.card, rec.card ?? undefined) : rec.card;
-      writePrint({ ...rec, jobId: r.value.jobId, issueNo: r.value.issueNo, status: r.value.status, ahead: r.value.ahead, card });
+      writePrint({
+        ...rec,
+        jobId: r.value.jobId,
+        issueNo: r.value.issueNo,
+        status: r.value.status,
+        ahead: r.value.ahead,
+        card,
+        // その印刷が実際に使った内容の印（無い・形が違えば分からないまま）と発行日（null の古い印刷は、従来どおり端末の今日の日付）
+        printedRev: isRev(r.value.rev) ? r.value.rev : null,
+        issuedOn: isStr(r.value.issuedOn) ? r.value.issuedOn : jstDate(now()),
+      });
       stopPolling();
       if (!isTerminal(r.value.status)) {
         polling = true;
@@ -399,11 +500,65 @@ export function createPublishStore(deps: PublishDeps) {
     return false;
   }
 
+  /** いまの内容を保存ずみにする（進行中の保存は待つ）。できなければ理由を出して false */
+  async function ensureSaved(data: RouteData): Promise<boolean> {
+    const ok = await save(data);
+    if (ok && isSaved(data)) return true;
+    patch({ printError: store.get().saveError ?? storageFailure() });
+    return false;
+  }
+
+  /** 申し込む前に記録を端末に書く。書けなければ前の記録に戻して false（申し込まない） */
+  function persist(rec: PrintRecord, restore: PrintRecord | null): boolean {
+    if (writePrint(rec)) return true;
+    writePrint(restore);
+    patch({ printError: printRecordFailure() });
+    return false;
+  }
+
+  /** いまの保存ずみの内容で、新しい requestId の申し込みの記録を作る */
+  function newRecord(data: RouteData, eventCode: string, prev: PrintRecord | null): PrintRecord & { rev: string } {
+    const saved = store.get().saved!;
+    return {
+      routeId: saved.id!,
+      requestId: randomToken(random),
+      jobId: null,
+      issueNo: null,
+      status: null,
+      ahead: null,
+      fingerprint: routeFingerprint(data),
+      rev: saved.savedRev!,
+      printedRev: null,
+      eventCode,
+      editKey: saved.editKey,
+      issuedOn: null,
+      card: deps.cardLook ? deps.cardLook() : null,
+      prev,
+    };
+  }
+
   /**
-   * 印刷を申し込む。未保存や変更ありなら先に保存する。
-   * - requestId は押すたびに新しく作る
-   * - ただし結果が分からない申し込みがあるときは、新しく作らず、同じ requestId・同じ本文で確かめ直す
-   *   （内容を変えたあとでも、前の内容の申し込みとして記録する）
+   * 送って結果を記録する。409 stale（保存されている内容が申し込みの版と違う。印刷は作られていない）なら、
+   * 保存状態を結果不明にして今の内容を保存し直し、新しい requestId と新しい rev で1回だけ申し込み直す
+   */
+  async function sendAndSettle(rec: PrintRecord & { rev: string }, data: RouteData, eventCode: string): Promise<boolean> {
+    const r = await send(rec);
+    if (r.ok || r.code !== "stale") return settle(rec, r);
+    writePrint(rec.prev);
+    markUnknown(rec.routeId);
+    if (!(await ensureSaved(data))) return false;
+    const again = newRecord(data, eventCode, rec.prev);
+    if (!persist(again, rec.prev)) return false;
+    // それも stale なら、はっきり断られた扱い（前の記録に戻してエラーを出す）
+    return settle(again, await send(again));
+  }
+
+  /**
+   * 印刷を申し込む（docs/api.md「印刷の申し込み」の画面の決まり 1〜5）。
+   * - いまの内容を保存ずみにしてから、その rev を付けて申し込む。requestId は押すたびに新しく作る
+   * - 結果が分からない申し込みがあるときは、新しく作らず、元の requestId・元の rev で確かめ直す
+   *   （内容を変えたあとでも。200 なら元の印刷で、応答の rev で今の内容のものかを判定する）
+   * - 申し込む前に記録を端末に書く。書けなければ申し込まない
    */
   async function requestPrint(data: RouteData, eventCode: string): Promise<boolean> {
     if (requesting) return false;
@@ -412,43 +567,38 @@ export function createPublishStore(deps: PublishDeps) {
     try {
       const prev = store.get().print;
       if (prev && prev.jobId === null && prev.editKey !== "" && prev.eventCode !== "") {
-        return settle(prev, await send(prev));
-      }
-      if (!isSaved(data)) {
-        const ok = await save(data);
-        if (!ok || !isSaved(data)) {
-          patch({ printError: store.get().saveError ?? storageFailure() });
-          return false;
+        let rec: PrintRecord = prev;
+        if (rec.rev === null) {
+          // rev を持たない前の形式の記録: 元の requestId のまま、今の内容の rev を付ける
+          // （元の印刷があればそれが返り、無ければその rev の内容でしか作られない）
+          if (!(await ensureSaved(data))) return false;
+          rec = { ...rec, rev: store.get().saved!.savedRev };
         }
+        if (!persist(rec, prev)) return false;
+        return await sendAndSettle(rec as PrintRecord & { rev: string }, data, eventCode);
       }
-      const saved = store.get().saved!;
-      const rec: PrintRecord = {
-        routeId: saved.id!,
-        requestId: randomToken(random),
-        jobId: null,
-        issueNo: null,
-        status: null,
-        ahead: null,
-        fingerprint: routeFingerprint(data),
-        eventCode,
-        editKey: saved.editKey,
-        issuedOn: jstDate(now()),
-        card: deps.cardLook ? deps.cardLook() : null,
-        prev: prev && prev.jobId !== null ? { ...prev, prev: null } : null,
-      };
-      writePrint(rec);
-      return settle(rec, await send(rec));
+      if (!(await ensureSaved(data))) return false;
+      const rec = newRecord(data, eventCode, prev && prev.jobId !== null ? { ...prev, prev: null } : null);
+      if (!persist(rec, prev)) return false;
+      return await sendAndSettle(rec, data, eventCode);
     } finally {
       requesting = false;
       patch({ requesting: false });
     }
   }
 
-  /** 記録された申し込みが、今の内容のものか */
-  function printMatches(data: RouteData | null): boolean {
+  /**
+   * 記録した印刷が、今の内容のものか。印刷が実際に使った内容の印（printedRev）と、今の内容の保存の印（savedRev）で比べる。
+   * 今の内容が未保存・結果不明なら other。印刷の印が分からない（古い印刷）なら unknown
+   */
+  function printRelation(data: RouteData | null): PrintRelation {
     const rec = store.get().print;
-    return !!rec && data !== null && rec.fingerprint === routeFingerprint(data);
+    if (!rec || rec.printedRev === null) return "unknown";
+    const saved = store.get().saved;
+    return isSaved(data) && saved!.id === rec.routeId && saved!.savedRev === rec.printedRev ? "same" : "other";
   }
+
+  const printMatches = (data: RouteData | null): boolean => printRelation(data) === "same";
 
   // ---- ほかのタブの変更 ----
 
@@ -459,8 +609,11 @@ export function createPublishStore(deps: PublishDeps) {
     }
     if (key === null || key === STORAGE_KEYS.print) {
       const fresh = readPrint(storage);
-      if (JSON.stringify(fresh) !== JSON.stringify(store.get().print)) {
+      const cur = store.get().print;
+      if (JSON.stringify(fresh) !== JSON.stringify(cur)) {
         patch({ print: fresh });
+        // 対象の印刷が変わったら、前の印刷の問い合わせ（世代）を無効にして、新しい印刷の問い合わせを始める
+        if (fresh?.jobId !== cur?.jobId || fresh?.requestId !== cur?.requestId) stopPolling();
         resumePolling();
       }
     }
@@ -490,12 +643,17 @@ export function createPublishStore(deps: PublishDeps) {
     return r;
   }
 
-  /** 路線ページで読んだ内容を、保存済みのものとして作りかけに入れるとき。端末に書けたら true */
-  function markSaved(id: string, data: RouteData, expiresAt: string): boolean {
+  /**
+   * 路線ページで読んだ内容を、作りかけに入れるとき。端末に書けたら true。
+   * 読んだときの版の印（rev）が端末の保存記録の印と同じときだけ保存ずみとして引き継ぎ、
+   * 違う・分からないときは結果不明にする（保存しなおすと送り直す。印刷の食い違いは stale で拾う）
+   */
+  function markSaved(id: string, data: RouteData, expiresAt: string, rev: string | null): boolean {
     refreshSaved();
     const rec = store.get().saved;
     if (!rec || rec.id !== id) return false;
-    return writeSaved({ ...rec, expiresAt, savedJson: routeJson(data) });
+    if (isRev(rev) && rec.savedRev === rev) return writeSaved({ ...rec, expiresAt, savedJson: routeJson(data) });
+    return writeSaved({ ...rec, expiresAt, savedJson: null, savedRev: null });
   }
 
   /** この端末がその路線の鍵を持っているか */
@@ -507,6 +665,7 @@ export function createPublishStore(deps: PublishDeps) {
     isSaved,
     saveStatus,
     requestPrint,
+    printRelation,
     printMatches,
     resumePolling,
     stopPolling,

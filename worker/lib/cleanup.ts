@@ -6,6 +6,9 @@ import type { Db } from "./types.ts";
 /** 終わった印刷記録を残す日数 */
 export const JOB_RETENTION_DAYS = 30;
 
+/** 路線 r に、まだ終わっていない（queued か printing の）印刷が無い */
+const NO_ACTIVE_JOB = "NOT EXISTS (SELECT 1 FROM print_jobs a WHERE a.route_id = r.id AND a.status IN ('queued', 'printing'))";
+
 export type CleanupResult = { routes: number; jobs: number; timedOut: number; rasterCleared: number; rateLimits: number };
 
 export async function cleanup(db: Db, now: Date): Promise<CleanupResult> {
@@ -22,10 +25,15 @@ export async function cleanup(db: Db, now: Date): Promise<CleanupResult> {
     db
       .prepare("DELETE FROM print_jobs WHERE status = 'queued' AND raster IS NULL AND created_at < ?1 RETURNING id")
       .bind(iso(new Date(now.getTime() - ORPHAN_MS))),
-    // 2. 期限切れの路線の印刷記録
-    db.prepare("DELETE FROM print_jobs WHERE route_id IN (SELECT id FROM routes WHERE expires_at <= ?1) RETURNING id").bind(nowIso),
-    // 3. 期限切れの路線
-    db.prepare("DELETE FROM routes WHERE expires_at <= ?1 RETURNING id").bind(nowIso),
+    // 2・3. 期限切れの路線とその印刷記録。ただし queued か printing の印刷が残っている路線は、
+    //   その印刷が終わるまで消さない（受け付けた印刷は最後まで刷る。次回以降の掃除で消える）。
+    //   公開 API は expires_at で 410 を返すので、消すのが遅れても公開の期限は変わらない
+    db
+      .prepare(
+        `DELETE FROM print_jobs WHERE route_id IN (SELECT id FROM routes r WHERE r.expires_at <= ?1 AND ${NO_ACTIVE_JOB}) RETURNING id`,
+      )
+      .bind(nowIso),
+    db.prepare(`DELETE FROM routes AS r WHERE r.expires_at <= ?1 AND ${NO_ACTIVE_JOB} RETURNING id`).bind(nowIso),
     // 4. 参照先の路線が無い（削除された）印刷のうち、終わっているもの
     db
       .prepare(

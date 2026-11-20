@@ -150,9 +150,24 @@ export function routeData(overrides: Record<string, unknown> = {}) {
 export async function createRoute(h: Harness, data: unknown = routeData(), editKey = token()) {
   const res = await h.call("POST", "/api/routes", { body: { data, editKey } });
   if (res.status !== 200) throw new Error(`路線を作れません: ${res.status} ${await res.text()}`);
-  const body = await json<{ id: string; expiresAt: string }>(res);
+  const body = await json<{ id: string; expiresAt: string; rev: string }>(res);
   return { ...body, editKey };
 }
+
+/** 版の印（docs/api.md: 保存されている data の文字列の SHA-256 の 16 進、先頭 16 文字）をテスト側で計算する */
+export async function revOf(text: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
+/** 保存されている路線の今の版の印（API を通さずに DB を直接読む。無ければ null） */
+export async function currentRev(h: Harness, routeId: string): Promise<string | null> {
+  const row = await h.db.prepare("SELECT data FROM routes WHERE id = ?1").bind(routeId).first<{ data: string }>();
+  return row ? revOf(row.data) : null;
+}
+
+/** 形だけ正しいダミーの版の印 */
+export const DUMMY_REV = "0".repeat(16);
 
 export async function currentEventCode(h: Harness): Promise<string> {
   return ensureEventCode(h.db);
@@ -161,8 +176,10 @@ export async function currentEventCode(h: Harness): Promise<string> {
 export async function apply(
   h: Harness,
   route: { id: string; editKey: string },
-  opts: { eventCode?: string; clientId?: string; requestId?: string; ip?: string } = {},
+  /** rev: 省略すると、保存されている今の内容の印（路線が無ければダミー）。null なら本文に rev を入れない */
+  opts: { eventCode?: string; clientId?: string; requestId?: string; ip?: string; rev?: string | null } = {},
 ) {
+  const rev = opts.rev === undefined ? ((await currentRev(h, route.id)) ?? DUMMY_REV) : opts.rev;
   return h.call("POST", "/api/print", {
     ip: opts.ip,
     body: {
@@ -171,6 +188,7 @@ export async function apply(
       eventCode: opts.eventCode ?? (await currentEventCode(h)),
       clientId: opts.clientId ?? token(),
       requestId: opts.requestId ?? token(),
+      ...(rev === null ? {} : { rev }),
     },
   });
 }

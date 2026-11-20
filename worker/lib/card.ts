@@ -12,6 +12,8 @@ export { CARD_MAX_HEIGHT };
 /** 申し込み時点で決めた、印字する内容。再印刷はこれから組み立て直す */
 export type CardSnapshot = {
   route: RouteData;
+  /** route の元になった保存内容の版の印。この項目ができる前の古い記録には無い */
+  rev?: string;
   issuedOn: string;
   expiresOn: string;
   url: string;

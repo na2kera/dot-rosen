@@ -54,6 +54,14 @@ export async function sha256Hex(text: string): Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(text))));
 }
 
+/**
+ * 版の印（docs/api.md「路線の保存」）: 保存されている data の文字列（サーバーが整えたあとの JSON）の
+ * SHA-256 を 16 進にした先頭 16 文字。列には持たず、返すたびに計算する。
+ */
+export async function routeRev(storedData: string): Promise<string> {
+  return (await sha256Hex(storedData)).slice(0, 16);
+}
+
 export async function hmacHex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));

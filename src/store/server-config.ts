@@ -35,10 +35,13 @@ export function createConfigLoader(api: Pick<Api, "getConfig">, timeoutMs = CONF
   const store = createStore<ServerConfig>(DEFAULT_SERVER_CONFIG);
   let loaded: Promise<ServerConfig> | null = null;
   let pending: Promise<ServerConfig> | null = null;
+  /** 取得の世代。遅れて届いた応答は、最新の世代のものだけ取り込む（取得済みかどうかでは新旧を決めない） */
+  let gen = 0;
 
   function load(): Promise<ServerConfig> {
     if (loaded) return loaded;
     if (pending) return pending;
+    const my = ++gen;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<null>((res) => {
       timer = setTimeout(() => res(null), timeoutMs);
@@ -55,9 +58,9 @@ export function createConfigLoader(api: Pick<Api, "getConfig">, timeoutMs = CONF
         store.set(cfg);
         return cfg;
       }
-      // 時間切れのあとに届いたものは取り込む
+      // 時間切れのあとに届いたものは、そのあとに取り直していなければ取り込む
       void fetched.then((late) => {
-        if (late && !loaded) {
+        if (late && my === gen) {
           loaded = Promise.resolve(late);
           store.set(late);
         }

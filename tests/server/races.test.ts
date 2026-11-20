@@ -195,6 +195,61 @@ describe("5. 失敗回数の制限は、並行のリクエストでも超えな�
     expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `login:${ip2}`)).toBe(9);
   });
 
+  // 遅いリクエスト: 時刻を採ったあと（古い時間窓）に、別のリクエストが新しい窓で数え始めた
+  const LOGIN_WINDOW = 10 * 60_000;
+  const RATE_UPSERT = /INSERT INTO rate_limits/;
+
+  it("管理ログイン: 古い時間窓の時刻を持った遅い失敗は、新しい窓の回数を戻さず、今の窓に 1 回として数える", async () => {
+    const ip = "198.51.100.30";
+    h.clock.set("2026-11-20T03:09:59.000Z"); // 窓の終わり間際に時刻を採る
+    h.beforeQuery(RATE_UPSERT, async () => {
+      h.clock.advance(LOGIN_WINDOW);
+      await seedRateLimit(h, "login", ip, 10); // 新しい窓で上限まで数えられた
+    });
+    const slow = await adminLogin(h, "wrong", ip);
+    expect(slow.status).toBe(429);
+    expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `login:${ip}`)).toBe(10);
+    // 新しい窓のリクエストも断られる（数え直されていない）
+    expect((await adminLogin(h, "wrong", ip)).status).toBe(429);
+    const row = await h.db.prepare("SELECT window_start FROM rate_limits WHERE key = ?1").bind(`login:${ip}`).first<{ window_start: string }>();
+    expect(row!.window_start).toBe("2026-11-20T03:10:00.000Z");
+  });
+
+  it("管理ログイン: 古い時間窓の遅い成功は、今の窓に数えた 1 回を戻す（回数は変わらない）", async () => {
+    const ip = "198.51.100.31";
+    h.clock.set("2026-11-20T03:09:59.000Z");
+    h.beforeQuery(RATE_UPSERT, async () => {
+      h.clock.advance(LOGIN_WINDOW);
+      await seedRateLimit(h, "login", ip, 5);
+    });
+    expect((await adminLogin(h, SECRETS.ADMIN_PASSWORD, ip)).status).toBe(200);
+    expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `login:${ip}`)).toBe(5);
+    // 古い窓の遅い失敗は今の窓に 1 回として数える
+    h.clock.set("2026-11-20T03:09:59.000Z");
+    expect((await adminLogin(h, "wrong", ip)).status).toBe(401);
+    expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `login:${ip}`)).toBe(6);
+  });
+
+  it("会場コード: 古い時間窓の時刻を持った遅いリクエストでも、新しい窓の回数は戻らない", async () => {
+    const ip = "198.51.100.32";
+    h.clock.set("2026-11-20T03:09:59.000Z");
+    h.beforeQuery(RATE_UPSERT, async () => {
+      h.clock.advance(10 * 60_000);
+      await seedRateLimit(h, "code", ip, 30);
+    });
+    expect((await h.call("GET", "/api/event?code=WRONGCODE1", { ip })).status).toBe(429);
+    expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `code:${ip}`)).toBe(30);
+  });
+
+  it("時間窓が新しくなれば 1 から数え直す", async () => {
+    const ip = "198.51.100.33";
+    await seedRateLimit(h, "login", ip, 10);
+    expect((await adminLogin(h, "wrong", ip)).status).toBe(429);
+    h.clock.advance(LOGIN_WINDOW);
+    expect((await adminLogin(h, "wrong", ip)).status).toBe(401);
+    expect(await count("SELECT count AS n FROM rate_limits WHERE key = ?1", `login:${ip}`)).toBe(1);
+  });
+
   it("路線の作成: 残り 3 回のところへ 8 件同時に送ると、作られるのは 3 件だけ", async () => {
     const ip = "198.51.100.24";
     await seedRateLimit(h, "create", ip, 117);
@@ -231,6 +286,87 @@ describe("6. 日次の掃除", () => {
     expect(await cleanup(h.db, h.clock.now())).toMatchObject({ jobs: 1, rasterCleared: 0 });
     const rows = await h.db.prepare("SELECT id, status, raster FROM print_jobs").all();
     expect(rows.results).toEqual([{ id: b.jobId, status: "done", raster: null }]);
+  });
+});
+
+describe("6b. 期限切れの掃除と、待ち・印刷中の印刷", () => {
+  const CLAIM_UPDATE = /UPDATE print_jobs SET status = 'printing'/;
+  const ROWS_SELECT = /substr\(raster/;
+  const expire = (id: string) => h.db.prepare("UPDATE routes SET expires_at = ?2 WHERE id = ?1").bind(id, h.clock.now().toISOString()).run();
+  const jobs = async () => (await h.db.prepare("SELECT id, status FROM print_jobs ORDER BY id").all<{ id: number; status: string }>()).results;
+
+  it("待ち（queued）の印刷が残っている期限切れの路線は消さず、印刷は最後まで刷れる。終われば次の掃除で消える", async () => {
+    const r = await createRoute(h);
+    const { jobId } = await json<PrintRes>(await apply(h, r));
+    await expire(r.id);
+    h.clock.advance(1000);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 0, jobs: 0 });
+    // 公開 API は期限切れのまま
+    expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(410);
+    const c = await claimAndRead(h);
+    expect(c!.jobId).toBe(jobId);
+    expect((await printer(h, "POST", `/api/printer/jobs/${jobId}/done`, { ok: true })).status).toBe(200);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 1, jobs: 1 });
+    expect(await jobs()).toEqual([]);
+  });
+
+  it("印刷中（printing）の印刷は、claim と rows の間に掃除が走っても rows が 404 にならない", async () => {
+    const r = await createRoute(h);
+    const { jobId } = await json<PrintRes>(await apply(h, r));
+    expect((await printer(h, "POST", "/api/printer/claim")).status).toBe(200);
+    await expire(r.id);
+    h.clock.advance(1000);
+    h.beforeQuery(ROWS_SELECT, () => cleanup(h.db, h.clock.now()));
+    const rows = await printer(h, "GET", `/api/printer/jobs/${jobId}/rows?offset=0&count=1`);
+    expect(rows.status).toBe(200);
+    expect((await printer(h, "POST", `/api/printer/jobs/${jobId}/done`, { ok: true })).status).toBe(200);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 1, jobs: 1 });
+  });
+
+  it("claim の直前に掃除が走っても、期限切れの路線の待ちの印刷を渡す", async () => {
+    const r = await createRoute(h);
+    const { jobId } = await json<PrintRes>(await apply(h, r));
+    await expire(r.id);
+    h.clock.advance(1000);
+    h.beforeQuery(CLAIM_UPDATE, () => cleanup(h.db, h.clock.now()));
+    const res = await printer(h, "POST", "/api/printer/claim");
+    expect(res.status).toBe(200);
+    expect((await json<{ jobId: number }>(res)).jobId).toBe(jobId);
+  });
+
+  it("期限の直前に入った再印刷は、期限後の掃除で消えない", async () => {
+    const r = await createRoute(h);
+    const { jobId } = await json<PrintRes>(await apply(h, r));
+    const c = await claimAndRead(h);
+    await printer(h, "POST", `/api/printer/jobs/${c!.jobId}/done`, { ok: true });
+    const cookie = await adminCookie(h);
+    const re = await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`);
+    expect(re.status).toBe(200);
+    const reId = (await json<{ jobId: number }>(re)).jobId;
+    await expire(r.id);
+    h.clock.advance(1000);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 0, jobs: 0 });
+    expect(await jobs()).toEqual([
+      { id: jobId, status: "done" },
+      { id: reId, status: "queued" },
+    ]);
+    const c2 = await claimAndRead(h);
+    expect(c2!.jobId).toBe(reId);
+  });
+
+  it("再印刷を確かめたあと追加の直前に期限後の掃除が走ったら、追加しない（路線の無い印刷を作らない）", async () => {
+    const r = await createRoute(h);
+    const { jobId } = await json<PrintRes>(await apply(h, r));
+    const c = await claimAndRead(h);
+    await printer(h, "POST", `/api/printer/jobs/${c!.jobId}/done`, { ok: true });
+    const cookie = await adminCookie(h);
+    // 掃除は路線の期限を過ぎた時刻で走る
+    const expiresAt = (await h.db.prepare("SELECT expires_at FROM routes WHERE id = ?1").bind(r.id).first<{ expires_at: string }>())!.expires_at;
+    h.beforeQuery(REPRINT_INSERT, () => cleanup(h.db, new Date(Date.parse(expiresAt) + 1000)));
+    const re = await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`);
+    expect(re.status).toBe(404);
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs")).toBe(0);
+    expect(await count("SELECT COUNT(*) AS n FROM routes")).toBe(0);
   });
 });
 

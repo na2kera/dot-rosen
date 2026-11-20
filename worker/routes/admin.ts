@@ -97,9 +97,9 @@ export function adminApi(deps: Deps) {
     const body = asRecord(await readJson(c));
     const given = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
     // 照合の前に失敗の枠を1つ取り（上限なら 429 で照合しない）、成功したら戻す
-    await acquireAttempt(db, "login", ip, now);
+    const attempt = await acquireAttempt(db, "login", ip, now);
     if (!(await safeEqual(given, password))) throw new ApiError(401, "unauthorized");
-    await releaseAttempt(db, "login", ip, now);
+    await releaseAttempt(db, attempt);
     const exp = now.getTime() + SESSION_MS;
     setSessionCookie(c, await sessionValue(sessionSecret, exp), SESSION_MS / 1000);
     return c.json({ ok: true, expiresAt: iso(new Date(exp)) });

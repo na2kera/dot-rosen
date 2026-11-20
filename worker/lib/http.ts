@@ -16,6 +16,7 @@ export type ErrorCode =
   | "limit_reached"
   | "not_accepting"
   | "queue_full"
+  | "stale"
   | "expired"
   | "too_large"
   | "rate_limited"
@@ -107,6 +108,8 @@ export const ROUTE_ID_RE = /^[A-Za-z0-9_-]{16}$/;
 export const EDIT_KEY_RE = /^[A-Za-z0-9_-]{22,128}$/;
 /** clientId・requestId（画面が作るランダムな文字列。16〜64 文字） */
 export const CLIENT_TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
+/** 版の印（SHA-256 の 16 進の先頭 16 文字） */
+export const REV_RE = /^[0-9a-f]{16}$/;
 /** 会場コード（英数字 4〜32 文字。作るのは 10 文字） */
 export const EVENT_CODE_RE = /^[A-Za-z0-9]{4,32}$/;
 /** 印刷の ID（連番） */

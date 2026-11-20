@@ -73,7 +73,7 @@ const ids = stationsFile.stations
   .map((s) => s.id);
 const route = { ...defaultRouteDraft(), name: "ながいながい路線名テスト線", symbol: "NG", stations: ids, train: { ...defaultDesign(), cars: 16 } };
 route.name = [...route.name].slice(0, 12).join("");
-const body = JSON.stringify({ routeId: "AAAAAAAAAAAAAAAA", editKey: "k".repeat(32), eventCode: "ABCDEFGHJK", clientId: "c".repeat(32), requestId: "r".repeat(32) });
+const body = JSON.stringify({ routeId: "AAAAAAAAAAAAAAAA", editKey: "k".repeat(32), eventCode: "ABCDEFGHJK", clientId: "c".repeat(32), requestId: "r".repeat(32), rev: "0123456789abcdef" });
 const stored = JSON.stringify(parseRouteData(route, res.lookup).ok ? route : null);
 
 function once() {
@@ -84,6 +84,7 @@ function once() {
   if (!parsed.ok) throw new Error(parsed.error);
   const snapshot = {
     route: parsed.value,
+    rev: b0.rev,
     issuedOn: "2026.11.20",
     expiresOn: "12月20日",
     url: "https://dot-rosen.example/r/AAAAAAAAAAAAAAAA",

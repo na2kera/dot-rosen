@@ -1,102 +1,13 @@
 // 保存と印刷の申し込みの状態遷移（src/store/publish-store.ts と src/api/client.ts）の試験。
-// サーバーは docs/api.md の取り決めどおりに答える小さな偽物を使う。
+// サーバーは docs/api.md の取り決めどおりに答える小さな偽物（tests/ui-fake-server.ts）を使う。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultRouteDraft, type RouteData } from "../shared/route/index.ts";
-import { createApi, errorMessage, type FetchLike } from "../src/api/client.ts";
+import { createApi, errorMessage } from "../src/api/client.ts";
 import { memoryStorage, STORAGE_KEYS, type KeyValueStorage } from "../src/store/kv-storage.ts";
 import { createPublishStore, POLL_MS, POLL_SLOW_MS, pollDelay, readPrint, readSaved, routeFingerprint } from "../src/store/publish-store.ts";
+import { fakeServer, revOf } from "./ui-fake-server.ts";
 
 const data = (name = "テスト線"): RouteData => ({ ...defaultRouteDraft(), name, stations: ["s1", "s2"] });
-
-type Call = { method: string; path: string; headers: Record<string, string>; body: Record<string, unknown> | null };
-
-/** 取り決めどおりに答える偽のサーバー */
-function fakeServer() {
-  const calls: Call[] = [];
-  const routes = new Map<string, { key: string; data: unknown }>();
-  const jobs = new Map<number, { clientId: string; requestId: string; status: string; ahead: number; issueNo: number }>();
-  let seq = 0;
-  let jobSeq = 0;
-  /** 次の n 回を通信の失敗にする */
-  let failNext = 0;
-  /** 次の応答を差し替える */
-  const overrides: (((c: Call) => Response | null) | null)[] = [];
-  const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
-
-  const fetchFn: FetchLike = async (input, init) => {
-    const url = new URL(input, "http://x");
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
-    const call: Call = { method: init?.method ?? "GET", path: url.pathname + url.search, headers, body };
-    calls.push(call);
-    const o = overrides.shift();
-    if (o) {
-      const r = o(call);
-      if (r) return r;
-    }
-    if (headers["Content-Type"] !== "application/json") return json(400, { error: "invalid" });
-    if (failNext > 0) {
-      failNext--;
-      // サーバーには届いたが、応答が返ってこなかったことにする
-      handle(call);
-      throw new TypeError("Failed to fetch");
-    }
-    return handle(call);
-  };
-
-  function handle(c: Call): Response {
-    const m = c.path.match(/^\/api\/routes(?:\/([^/?]+))?/);
-    if (m && c.method === "POST") {
-      const key = String(c.body!.editKey);
-      for (const [id, r] of routes) if (r.key === key) return json(200, { id, expiresAt: "2026-12-20T00:00:00.000Z" });
-      const id = `ROUTE${String(++seq).padStart(11, "0")}`;
-      routes.set(id, { key, data: c.body!.data });
-      return json(200, { id, expiresAt: "2026-12-20T00:00:00.000Z" });
-    }
-    if (m && c.method === "PUT") {
-      const r = routes.get(m[1]);
-      if (!r) return json(404, { error: "not_found" });
-      if (r.key !== c.headers["X-Edit-Key"]) return json(403, { error: "forbidden" });
-      r.data = c.body!.data;
-      return json(200, { ok: true, expiresAt: "2026-12-20T00:00:00.000Z" });
-    }
-    if (m && c.method === "DELETE") {
-      const r = routes.get(m[1]);
-      if (!r) return json(404, { error: "not_found" });
-      if (r.key !== c.headers["X-Edit-Key"]) return json(403, { error: "forbidden" });
-      routes.delete(m[1]);
-      return json(200, { ok: true });
-    }
-    if (c.path === "/api/print" && c.method === "POST") {
-      const b = c.body!;
-      for (const [jobId, j] of jobs)
-        if (j.clientId === b.clientId && j.requestId === b.requestId) return json(200, { jobId, issueNo: j.issueNo, ahead: j.ahead, status: j.status });
-      const jobId = ++jobSeq;
-      jobs.set(jobId, { clientId: String(b.clientId), requestId: String(b.requestId), status: "queued", ahead: 2, issueNo: 40 + jobId });
-      return json(200, { jobId, issueNo: 40 + jobId, ahead: 2, status: "queued" });
-    }
-    const pm = c.path.match(/^\/api\/print\/(\d+)\?clientId=(.+)$/);
-    if (pm && c.method === "GET") {
-      const j = jobs.get(Number(pm[1]));
-      if (!j || j.clientId !== decodeURIComponent(pm[2])) return json(404, { error: "not_found" });
-      return json(200, { status: j.status, ahead: j.ahead, issueNo: j.issueNo });
-    }
-    return json(404, { error: "not_found" });
-  }
-
-  return {
-    fetchFn,
-    calls,
-    routes,
-    jobs,
-    json,
-    failOnce: (n = 1) => {
-      failNext = n;
-    },
-    override: (f: (c: Call) => Response | null) => overrides.push(f),
-  };
-}
 
 let counter = 0;
 const random = (n: number) => {
@@ -377,8 +288,8 @@ describe("指摘1: 端末に書けないとき", () => {
     await p.save(data());
     const id = p.store.get().saved!.id!;
     const { p: p2 } = setup({ storage: Object.assign(failingStorage([STORAGE_KEYS.saved]), { getItem: storage.getItem }) });
-    expect(p2.markSaved(id, data("新しい名前"), "2026-12-20T00:00:00.000Z")).toBe(false);
-    expect(p.markSaved(id, data("新しい名前"), "2026-12-20T00:00:00.000Z")).toBe(true);
+    expect(p2.markSaved(id, data(), "2026-12-20T00:00:00.000Z", revOf(data()))).toBe(false);
+    expect(p.markSaved(id, data(), "2026-12-20T00:00:00.000Z", revOf(data()))).toBe(true);
   });
 });
 
@@ -497,8 +408,9 @@ describe("指摘8: 期限切れ", () => {
 });
 
 describe("指摘10: 発行番号と申し込んだ日", () => {
-  it("申し込みが通ったら、発行番号と申し込んだ日（日本時間）を記録する", async () => {
-    const { p } = setup({ now: () => new Date("2026-11-20T16:00:00Z") });
+  it("申し込みが通ったら、発行番号と発行日（応答の issuedOn。端末の時計ではない）を記録する", async () => {
+    const { server, p } = setup({ now: () => new Date("2026-11-20T00:00:00Z") });
+    server.state.today = "2026.11.21";
     await p.requestPrint(data(), "CODE1");
     expect(p.store.get().print).toMatchObject({ issueNo: 41, issuedOn: "2026.11.21" });
     p.stopPolling();

@@ -4,7 +4,7 @@ import { toCardLook, type CardLook } from "../../shared/card/index.ts";
 import { parseRouteData } from "../../shared/route/index.ts";
 import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
 import { APP_NAME, cardOptions, iso, jstDate, jstMonthDay } from "../lib/config.ts";
-import { safeEqual, sha256Hex } from "../lib/crypto.ts";
+import { routeRev, safeEqual, sha256Hex } from "../lib/crypto.ts";
 import {
   ApiError,
   asRecord,
@@ -16,6 +16,7 @@ import {
   jobIdParam,
   notFound,
   readJson,
+  REV_RE,
   ROUTE_ID_RE,
   str,
 } from "../lib/http.ts";
@@ -30,10 +31,10 @@ import { checkOwner, loadRoute } from "./routes.ts";
  * 違えば枠はそのまま（失敗を1回数えたことになる）で 403。
  */
 async function checkEventCode(db: Db, code: string, ip: string, now: Date): Promise<{ eventCode: string; accepting: boolean }> {
-  await acquireAttempt(db, "code", ip, now);
+  const attempt = await acquireAttempt(db, "code", ip, now);
   const s = await readSettings(db);
   if (s.eventCode === null || !(await safeEqual(code, s.eventCode))) throw new ApiError(403, "invalid_code");
-  await releaseAttempt(db, "code", ip, now);
+  await releaseAttempt(db, attempt);
   return { eventCode: s.eventCode, accepting: s.accepting };
 }
 
@@ -71,11 +72,24 @@ async function replayResponse(db: Db, prev: ExistingJob, routeId: string, editKe
 async function progressResponse(db: Db, jobId: number, fallback: CardLook) {
   const p = await jobProgress(db, jobId);
   if (!p) throw new Error("印刷が見つかりません");
-  const look = await db
-    .prepare("SELECT json_extract(snapshot, '$.monoSet') AS monoSet, json_extract(snapshot, '$.sideLayout') AS sideLayout FROM print_jobs WHERE id = ?1")
+  const snap = await db
+    .prepare(
+      `SELECT json_extract(snapshot, '$.monoSet') AS monoSet, json_extract(snapshot, '$.sideLayout') AS sideLayout,
+         json_extract(snapshot, '$.rev') AS rev, json_extract(snapshot, '$.issuedOn') AS issuedOn
+       FROM print_jobs WHERE id = ?1`,
+    )
     .bind(jobId)
-    .first<{ monoSet: unknown; sideLayout: unknown }>();
-  return { jobId, issueNo: p.issueNo, ahead: p.ahead, status: p.status, card: toCardLook(look, fallback) };
+    .first<{ monoSet: unknown; sideLayout: unknown; rev: unknown; issuedOn: unknown }>();
+  // rev と issuedOn は、その印刷が実際に使った内容（snapshot の値）。rev の無い古い記録は null
+  return {
+    jobId,
+    issueNo: p.issueNo,
+    ahead: p.ahead,
+    status: p.status,
+    card: toCardLook(snap, fallback),
+    rev: typeof snap?.rev === "string" ? snap.rev : null,
+    issuedOn: typeof snap?.issuedOn === "string" ? snap.issuedOn : null,
+  };
 }
 
 /**
@@ -149,10 +163,10 @@ export function printApi(deps: Deps) {
     const ip = clientIp(c);
     const code = c.req.query("code") ?? "";
     // 照合の前に失敗の枠を1つ取り、合っていれば戻す（並行でも上限を超えて照合しない）
-    await acquireAttempt(db, "code", ip, now);
+    const attempt = await acquireAttempt(db, "code", ip, now);
     const s = await readSettings(db);
     const valid = EVENT_CODE_RE.test(code) && s.eventCode !== null && (await safeEqual(code, s.eventCode));
-    if (valid) await releaseAttempt(db, "code", ip, now);
+    if (valid) await releaseAttempt(db, attempt);
     return c.json({ valid, accepting: s.accepting });
   });
 
@@ -166,23 +180,28 @@ export function printApi(deps: Deps) {
     const code = str(body.eventCode, EVENT_CODE_RE);
     const clientId = str(body.clientId, CLIENT_TOKEN_RE);
     const requestId = str(body.requestId, CLIENT_TOKEN_RE);
+    const rev = str(body.rev, REV_RE);
 
     // 回数制限 → 会場コード
     const { eventCode, accepting } = await checkEventCode(db, code, ip, now);
 
-    // 同じ (clientId, requestId) の再送なら、鍵を確かめてから元の印刷を返す
+    // 同じ (clientId, requestId) の再送なら、鍵を確かめてから元の印刷を返す（rev が違っていても元の印刷）
     const prev = await existingJob(db, clientId, requestId);
     if (prev) return c.json(await replayResponse(db, prev, routeId, editKey, cardOptions(c.env)));
 
     // 受付中か → 路線（期限内・非公開でない・鍵が合う）
     if (!accepting) throw new ApiError(409, "not_accepting");
     const route = await checkOwner(await loadRoute(db, routeId), editKey, now);
+    // 版の印: 保存されている内容が申し込みの版と違えば、印刷を作らず 409 stale（回数も番号も消費しない）。
+    // snapshot はこの照合と同じ読み出し（route.data）から作るので、このあとに上書きが来ても刷られるのは確かめた内容
+    if ((await routeRev(route.data)) !== rev) throw new ApiError(409, "stale");
     const parsed = parseRouteData(JSON.parse(route.data), deps.resources.lookup);
     if (!parsed.ok) throw new Error(`保存済みの路線データが検査に通りません: ${parsed.error}`);
 
     const opts = cardOptions(c.env);
     const snapshot: CardSnapshot = {
       route: parsed.value,
+      rev,
       issuedOn: jstDate(now),
       expiresOn: jstMonthDay(new Date(route.expires_at)),
       url: `${new URL(c.req.url).origin}/r/${routeId}`,

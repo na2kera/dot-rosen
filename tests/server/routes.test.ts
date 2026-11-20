@@ -70,7 +70,7 @@ describe("路線の保存と取得", () => {
     h.clock.advance(24 * 3600_000);
     const ok = await h.call("PUT", `/api/routes/${r.id}`, { body: { data: routeData({ name: "変えた" }) }, headers: { "X-Edit-Key": r.editKey } });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true, expiresAt: r.expiresAt });
+    expect(await ok.json()).toEqual({ ok: true, expiresAt: r.expiresAt, rev: expect.stringMatching(/^[0-9a-f]{16}$/) });
     const got = await json<{ data: { name: string } }>(await h.call("GET", `/api/routes/${r.id}`));
     expect(got.data.name).toBe("変えた");
 

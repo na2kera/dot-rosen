@@ -146,7 +146,7 @@ describe("申し込んだときの見た目を覚える", () => {
     const storage = memoryStorage();
     const fetchFn: FetchLike = async (input, init) => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-      if (input === "/api/routes") return json(200, { id: "ROUTE00000000001", expiresAt: "2026-12-20T00:00:00.000Z" });
+      if (input === "/api/routes") return json(200, { id: "ROUTE00000000001", expiresAt: "2026-12-20T00:00:00.000Z", rev: "0123456789abcdef" });
       if (input === "/api/print") return json(200, printBody(body));
       return json(200, { status: "queued", ahead: 0, issueNo: 41 });
     };

@@ -37,7 +37,8 @@ function loadIndex(): Promise<StationIndex> {
   return indexPromise;
 }
 
-type Loaded = { index: StationIndex; data: RouteData; expiresAt: string };
+/** rev は、data と同じ応答の版の印（無い・形が違えば null） */
+type Loaded = { index: StationIndex; data: RouteData; expiresAt: string; rev: string | null };
 type State = { kind: "loading" } | { kind: "ok"; v: Loaded } | { kind: "error"; fail: ApiFailure | null } | { kind: "deleted" };
 
 export function RoutePage({ id }: { id: string }) {
@@ -54,7 +55,7 @@ export function RoutePage({ id }: { id: string }) {
         if (!r.ok) return setState({ kind: "error", fail: r });
         const parsed = parseRouteData(r.value.data, index.lookup);
         if (!parsed.ok) return setState({ kind: "error", fail: { ok: false, code: "invalid", status: 200, reason: parsed.error } });
-        setState({ kind: "ok", v: { index, data: parsed.value, expiresAt: r.value.expiresAt } });
+        setState({ kind: "ok", v: { index, data: parsed.value, expiresAt: r.value.expiresAt, rev: typeof r.value.rev === "string" ? r.value.rev : null } });
       },
       () => alive && setState({ kind: "error", fail: null }),
     );
@@ -138,8 +139,9 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
       const ok = await confirmDialog("いま作りかけの路線を、この路線で置きかえますか？", { ok: "置きかえる" });
       if (!ok) return;
     }
-    // 端末に書けてから移る（書けないまま移ると、作る画面で前の作りかけが出てしまう）
-    if (!publish.markSaved(id, v.data, v.expiresAt) || !writeDraft(storage, v.data)) {
+    // 端末に書けてから移る（書けないまま移ると、作る画面で前の作りかけが出てしまう）。
+    // 読んだときの rev が端末の保存記録と同じときだけ保存ずみとして引き継ぐ（違えば結果不明。印刷の食い違いは stale で拾う）
+    if (!publish.markSaved(id, v.data, v.expiresAt, v.rev) || !writeDraft(storage, v.data)) {
       toast("この端末に保存できないため、編集を始められません（プライベートモードや空き容量を確かめてね）", { tone: "alert", ms: 5000 });
       return;
     }

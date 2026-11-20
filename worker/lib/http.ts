@@ -17,7 +17,6 @@ export type ErrorCode =
   | "not_accepting"
   | "queue_full"
   | "stale"
-  | "expired"
   | "too_large"
   | "rate_limited"
   | "internal";

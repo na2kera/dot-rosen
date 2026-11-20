@@ -15,7 +15,6 @@ export type CardSnapshot = {
   /** route の元になった保存内容の版の印。この項目ができる前の古い記録には無い */
   rev?: string;
   issuedOn: string;
-  expiresOn: string;
   url: string;
   appName: string;
   monoSet: MonoSet;
@@ -33,7 +32,6 @@ export function timedBuild(snapshot: CardSnapshot, issueNo: number, res: Resourc
     font: res.font,
     issueNo,
     issuedOn: snapshot.issuedOn,
-    expiresOn: snapshot.expiresOn,
     url: snapshot.url,
     appName: snapshot.appName,
     monoSet: snapshot.monoSet,

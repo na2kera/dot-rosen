@@ -131,7 +131,7 @@ describe("路線カード", () => {
     for (const side of ["two-x1", "lead-x2", "two-x2-rotated"] as const) {
       for (const loop of [false, true]) {
         const route = kit.route({ name: "ＷＷＷＷＷＷＷＷＷＷＷＷ", symbol: "WW", lineColor: "black", stations: loop ? YAMANOTE : LONG30, loop, train: { ...defaultDesign(), cars: 16 } });
-        const input = kit.input(route, { sideLayout: side, url: longUrl, expiresOn: "12月20日" });
+        const input = kit.input(route, { sideLayout: side, url: longUrl });
         const bit = renderCardPrint(input);
         expect(bit.height, `${side} loop=${loop}`).toBeLessThanOrEqual(CARD_MAX_HEIGHT);
       }
@@ -182,11 +182,11 @@ describe("路線カード", () => {
 
 /** 高さ、印刷用の CRC32、カラー版の CRC32（駅データやフォント、電車の絵を作り直したときも変わる） */
 const EXPECTED_HASHES: Record<string, string> = {
-  "long-30st-16car": "2214 6bbdc24a 3e02596f",
-  "loop-30st": "2290 a1272c3d 905e782",
-  "short-2st-1car": "998 a505ddfc ce2683d6",
-  "side-two-x2-rotated-light": "1966 a66f632c bd3eb6de",
-  "unknown-glyph": "1042 df5e6e97 225eb153",
+  "long-30st-16car": "2214 909fc9ca a1f375c8",
+  "loop-30st": "2290 5a0527bd 96f4cb25",
+  "short-2st-1car": "998 5e27d67c 51d7af71",
+  "side-two-x2-rotated-light": "1966 5d4d68ac 22cf9a79",
+  "unknown-glyph": "1042 247c6517 bdaf9df4",
 };
 
 // ---- QR コードの読み戻し ----

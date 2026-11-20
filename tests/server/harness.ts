@@ -150,7 +150,7 @@ export function routeData(overrides: Record<string, unknown> = {}) {
 export async function createRoute(h: Harness, data: unknown = routeData(), editKey = token()) {
   const res = await h.call("POST", "/api/routes", { body: { data, editKey } });
   if (res.status !== 200) throw new Error(`路線を作れません: ${res.status} ${await res.text()}`);
-  const body = await json<{ id: string; expiresAt: string; rev: string }>(res);
+  const body = await json<{ id: string; rev: string }>(res);
   return { ...body, editKey };
 }
 

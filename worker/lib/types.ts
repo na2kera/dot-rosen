@@ -22,7 +22,6 @@ export type Bindings = {
   ADMIN_PASSWORD?: string;
   PRINTER_TOKEN?: string;
   SESSION_SECRET?: string;
-  EXPIRY_DAYS?: string;
   CARD_MONO_SET?: string;
   CARD_SIDE_LAYOUT?: string;
 };

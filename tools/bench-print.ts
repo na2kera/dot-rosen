@@ -86,7 +86,6 @@ function once() {
     route: parsed.value,
     rev: b0.rev,
     issuedOn: "2026.11.20",
-    expiresOn: "12月20日",
     url: "https://dot-rosen.example/r/AAAAAAAAAAAAAAAA",
     appName: "ドット路線メーカー",
     monoSet: "bold" as const,

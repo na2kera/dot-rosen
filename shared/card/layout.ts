@@ -19,7 +19,6 @@ export type LayoutInput = {
   font: BitmapFont;
   issueNo: number | null;
   issuedOn: string;
-  expiresOn?: string;
   url?: string;
   appName: string;
   sideLayout?: CardSideLayout;
@@ -332,7 +331,7 @@ export function layoutCard(input: LayoutInput): CardLayout {
     y += h;
   }
 
-  // ---- 7. QR コードとアプリ名・期限（URL が無ければ省く） ----
+  // ---- 7. QR コードとアプリ名（URL が無ければ省く） ----
   // ふつうは QR の右に文字を置く。URL が長くて右に文字が入らないときは、QR の下に置く。
   // QR が余白を含めて幅 384 に入らないときは QR を省き、文字だけにする。
   if (input.url) {
@@ -350,12 +349,6 @@ export function layoutCard(input: LayoutInput): CardLayout {
     const textLines = (tw: number) => {
       const lines: { s: string; c: number }[] = [];
       for (const s of wrapText(font, input.appName, tw)) lines.push({ s, c: CARD_INK });
-      if (input.expiresOn) {
-        const full = `${input.expiresOn}まで見られます`;
-        const parts = textWidth(font, full) <= tw ? [full] : [`${input.expiresOn}まで`, "見られます"];
-        lines.push({ s: "", c: CARD_INK });
-        for (const p of parts) for (const s of wrapText(font, p, tw)) lines.push({ s, c: CARD_SUB });
-      }
       return lines;
     };
     const lh = 20;

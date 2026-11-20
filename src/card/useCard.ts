@@ -41,7 +41,6 @@ export function useBitmapFont(): { font: BitmapFont | null; error: boolean; retr
 export type CardOptions = {
   /** 保存済みなら路線の id（QR コードに入れる URL になる） */
   routeId: string | null;
-  expiresAt: string | null;
   /** 印刷を申し込んだときの発行番号と日付（無ければ「No.----」と今日） */
   issueNo?: number | null;
   issuedOn?: string | null;
@@ -61,7 +60,6 @@ export function useCard(data: RouteData | null, lookup: StationLookup, font: Bit
     try {
       const input = cardInputs(data, lookup, font, {
         url: opts.routeId ? routeUrl(opts.routeId) : null,
-        expiresAt: opts.expiresAt,
         issueNo: opts.issueNo,
         issuedOn: opts.issuedOn,
         look: opts.look,
@@ -74,5 +72,5 @@ export function useCard(data: RouteData | null, lookup: StationLookup, font: Bit
     }
     // json で中身の変化を見る
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [json, font, lookup, opts.routeId, opts.expiresAt, opts.issueNo, opts.issuedOn, opts.look.monoSet, opts.look.sideLayout]);
+  }, [json, font, lookup, opts.routeId, opts.issueNo, opts.issuedOn, opts.look.monoSet, opts.look.sideLayout]);
 }

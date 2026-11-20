@@ -17,13 +17,11 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("サーバーの設定の読み取り", () => {
-  it("正しい応答はそのまま、足りない・不正な項目は既定値（bold / two-x1）", () => {
-    expect(parseServerConfig({ card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 7 })).toEqual({
-      card: { monoSet: "light", sideLayout: "lead-x2" },
-      expiryDays: 7,
-    });
-    expect(parseServerConfig({ card: { monoSet: "light" } })).toEqual({ card: { monoSet: "light", sideLayout: "two-x1" }, expiryDays: null });
-    expect(parseServerConfig({ card: { monoSet: "dark", sideLayout: 3 }, expiryDays: "30" })).toEqual(DEFAULT_SERVER_CONFIG);
+  it("正しい応答はそのまま、足りない・不正な項目は既定値（bold / two-x1）。古いサーバーの expiryDays は読み捨てる", () => {
+    expect(parseServerConfig({ card: { monoSet: "light", sideLayout: "lead-x2" } })).toEqual({ card: { monoSet: "light", sideLayout: "lead-x2" } });
+    expect(parseServerConfig({ card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 7 })).toEqual({ card: { monoSet: "light", sideLayout: "lead-x2" } });
+    expect(parseServerConfig({ card: { monoSet: "light" } })).toEqual({ card: { monoSet: "light", sideLayout: "two-x1" } });
+    expect(parseServerConfig({ card: { monoSet: "dark", sideLayout: 3 } })).toEqual(DEFAULT_SERVER_CONFIG);
     expect(parseServerConfig(null)).toEqual(DEFAULT_SERVER_CONFIG);
     expect(parseServerConfig("x")).toEqual(DEFAULT_SERVER_CONFIG);
   });
@@ -43,7 +41,7 @@ describe("設定の取得", () => {
   };
 
   it("取れたら store に入れ、2回目からは取りに行かない", async () => {
-    const { loader, calls } = loaderWith(async () => json(200, { card: { monoSet: "light", sideLayout: "two-x2-rotated" }, expiryDays: 30 }));
+    const { loader, calls } = loaderWith(async () => json(200, { card: { monoSet: "light", sideLayout: "two-x2-rotated" } }));
     expect(loader.store.get()).toEqual(DEFAULT_SERVER_CONFIG);
     const cfg = await loader.load();
     expect(cfg.card).toEqual({ monoSet: "light", sideLayout: "two-x2-rotated" });
@@ -56,7 +54,7 @@ describe("設定の取得", () => {
     let fail = true;
     const { loader, calls } = loaderWith(async () => {
       if (fail) throw new TypeError("Failed to fetch");
-      return json(200, { card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 30 });
+      return json(200, { card: { monoSet: "light", sideLayout: "lead-x2" } });
     });
     await expect(loader.load()).resolves.toEqual(DEFAULT_SERVER_CONFIG);
     expect(loader.store.get()).toEqual(DEFAULT_SERVER_CONFIG);
@@ -78,7 +76,7 @@ describe("設定の取得", () => {
     const p = loader.load();
     await vi.advanceTimersByTimeAsync(5000);
     await expect(p).resolves.toEqual(DEFAULT_SERVER_CONFIG);
-    release(json(200, { card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 30 }));
+    release(json(200, { card: { monoSet: "light", sideLayout: "lead-x2" } }));
     await vi.advanceTimersByTimeAsync(0);
     expect(loader.store.get().card).toEqual({ monoSet: "light", sideLayout: "lead-x2" });
   });
@@ -94,26 +92,25 @@ describe("プレビューに見た目が渡る", () => {
 
   it("印刷版には模様と側面の置き方、カラー版には側面の置き方だけを渡す", () => {
     const look: CardLook = { monoSet: "light", sideLayout: "two-x2-rotated" };
-    const inp = cardInputs(route, kit.lookup, kit.font, { url: "https://x.test/r/abc", expiresAt: null, look });
+    const inp = cardInputs(route, kit.lookup, kit.font, { url: "https://x.test/r/abc", look });
     expect(inp.print).toMatchObject({ monoSet: "light", sideLayout: "two-x2-rotated", appName: APP_NAME, url: "https://x.test/r/abc" });
     expect(inp.color.sideLayout).toBe("two-x2-rotated");
     expect(inp.color.monoSet).toBeUndefined();
     // カラー版の高さも側面の置き方に合わせて変わる
     const hs = CARD_SIDE_LAYOUTS.map(
-      (s) => renderCardColor(cardInputs(route, kit.lookup, kit.font, { url: null, expiresAt: null, look: { monoSet: "bold", sideLayout: s } }).color).image.height,
+      (s) => renderCardColor(cardInputs(route, kit.lookup, kit.font, { url: null, look: { monoSet: "bold", sideLayout: s } }).color).image.height,
     );
     expect(new Set(hs).size).toBe(3);
   });
 
   it("6 通りとも、画面の印刷プレビューはサーバーが刷る画像と1ドット単位で一致する", () => {
-    const expiresAt = "2026-12-20T03:00:00.000Z";
     for (const sideLayout of CARD_SIDE_LAYOUTS) {
       for (const monoSet of CARD_MONO_SETS) {
         const look = { monoSet, sideLayout };
-        const inp = cardInputs(route, kit.lookup, kit.font, { url: "https://x.test/r/abc", expiresAt, issueNo: 7, issuedOn: "2026.11.20", look });
+        const inp = cardInputs(route, kit.lookup, kit.font, { url: "https://x.test/r/abc", issueNo: 7, issuedOn: "2026.11.20", look });
         const preview = cardRaster(renderCardPrint(inp.print));
         const server = buildCardRaster(
-          { route, issuedOn: "2026.11.20", expiresOn: "12月20日", url: "https://x.test/r/abc", appName: APP_NAME, monoSet, sideLayout },
+          { route, issuedOn: "2026.11.20", url: "https://x.test/r/abc", appName: APP_NAME, monoSet, sideLayout },
           7,
           { lookup: kit.lookup, font: kit.font },
         );
@@ -146,7 +143,7 @@ describe("申し込んだときの見た目を覚える", () => {
     const storage = memoryStorage();
     const fetchFn: FetchLike = async (input, init) => {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-      if (input === "/api/routes") return json(200, { id: "ROUTE00000000001", expiresAt: "2026-12-20T00:00:00.000Z", rev: "0123456789abcdef" });
+      if (input === "/api/routes") return json(200, { id: "ROUTE00000000001", rev: "0123456789abcdef" });
       if (input === "/api/print") return json(200, printBody(body));
       return json(200, { status: "queued", ahead: 0, issueNo: 41 });
     };

@@ -19,14 +19,15 @@ beforeEach(async () => {
 });
 
 describe("路線の保存と取得", () => {
-  it("保存して取得できる。期限は 30 日後、応答は no-store", async () => {
+  it("保存して取得できる。応答に期限は無く、no-store", async () => {
     const r = await createRoute(h, routeData({ name: "  テスト線　", symbol: "ab", extra: 1 }));
     expect(r.id).toMatch(/^[A-Za-z0-9_-]{16}$/);
-    expect(r.expiresAt).toBe("2026-12-20T03:00:00.000Z");
+    expect(r).not.toHaveProperty("expiresAt");
     const res = await h.call("GET", `/api/routes/${r.id}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-    const body = await json<{ id: string; data: Record<string, unknown>; expiresAt: string }>(res);
+    const body = await json<{ id: string; data: Record<string, unknown> }>(res);
+    expect(Object.keys(body).sort()).toEqual(["data", "id", "rev"]);
     expect(body.id).toBe(r.id);
     expect(body.data.name).toBe("テスト線");
     expect(body.data.symbol).toBe("AB");
@@ -37,14 +38,24 @@ describe("路線の保存と取得", () => {
     expect(row!.edit_key_hash).not.toBe(r.editKey);
   });
 
-  it("EXPIRY_DAYS で期限を変えられる", async () => {
-    h.vars.EXPIRY_DAYS = "7";
-    try {
-      const r = await createRoute(h);
-      expect(r.expiresAt).toBe("2026-11-27T03:00:00.000Z");
-    } finally {
-      delete h.vars.EXPIRY_DAYS;
-    }
+  it("期限は無い: 作ってから何日たっても取得・上書き・同じ鍵の POST・削除ができる", async () => {
+    const r = await createRoute(h);
+    h.clock.advance(400 * 24 * 3600_000);
+    expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(200);
+    const put = await h.call("PUT", `/api/routes/${r.id}`, { body: { data: routeData({ name: "あとで" }) }, headers: { "X-Edit-Key": r.editKey } });
+    expect(put.status).toBe(200);
+    expect(await put.json()).toEqual({ ok: true, rev: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    const again = await h.call("POST", "/api/routes", { body: { data: routeData({ name: "もっとあとで" }), editKey: r.editKey } });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ id: r.id, rev: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    expect((await h.call("DELETE", `/api/routes/${r.id}`, { headers: { "X-Edit-Key": r.editKey } })).status).toBe(200);
+  });
+
+  it("マイグレーション後の routes に expires_at の列も索引も無い", async () => {
+    const cols = await h.db.prepare("SELECT name FROM pragma_table_info('routes')").all<{ name: string }>();
+    expect(cols.results.map((c) => c.name)).toEqual(["id", "edit_key_hash", "data", "created_at", "updated_at", "hidden"]);
+    const idx = await h.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'routes' AND name = 'routes_expires_at'").all();
+    expect(idx.results).toEqual([]);
   });
 
   it("同じ editKey の POST は新しく作らず上書きして同じ id を返す", async () => {
@@ -53,7 +64,6 @@ describe("路線の保存と取得", () => {
     h.clock.advance(60_000);
     const b = await createRoute(h, routeData({ name: "二回目" }), key);
     expect(b.id).toBe(a.id);
-    expect(b.expiresAt).toBe(a.expiresAt);
     const n = await h.db.prepare("SELECT COUNT(*) AS n FROM routes").first<{ n: number }>();
     expect(n!.n).toBe(1);
     const got = await json<{ data: { name: string } }>(await h.call("GET", `/api/routes/${a.id}`));
@@ -65,12 +75,12 @@ describe("路線の保存と取得", () => {
     expect((await h.call("GET", "/api/routes/short")).status).toBe(404);
   });
 
-  it("上書き: 鍵が合えば上書き（期限は延びない）、違えば 403、無ければ 403", async () => {
+  it("上書き: 鍵が合えば上書き、違えば 403、無ければ 403", async () => {
     const r = await createRoute(h);
     h.clock.advance(24 * 3600_000);
     const ok = await h.call("PUT", `/api/routes/${r.id}`, { body: { data: routeData({ name: "変えた" }) }, headers: { "X-Edit-Key": r.editKey } });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ ok: true, expiresAt: r.expiresAt, rev: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    expect(await ok.json()).toEqual({ ok: true, rev: expect.stringMatching(/^[0-9a-f]{16}$/) });
     const got = await json<{ data: { name: string } }>(await h.call("GET", `/api/routes/${r.id}`));
     expect(got.data.name).toBe("変えた");
 
@@ -93,18 +103,6 @@ describe("路線の保存と取得", () => {
     expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(404);
     const job = await h.db.prepare("SELECT status, raster FROM print_jobs WHERE id = ?1").bind(jobId).first<{ status: string; raster: unknown }>();
     expect(job).toEqual({ status: "canceled", raster: null });
-  });
-
-  it("期限切れ: 取得は 410、上書き・削除も 410（鍵が違えば 403）、同じ鍵の POST も 410", async () => {
-    const r = await createRoute(h);
-    h.clock.advance(30 * 24 * 3600_000);
-    const g = await h.call("GET", `/api/routes/${r.id}`);
-    expect(g.status).toBe(410);
-    expect(await g.json()).toEqual({ error: "expired" });
-    expect((await h.call("PUT", `/api/routes/${r.id}`, { body: { data: routeData() }, headers: { "X-Edit-Key": r.editKey } })).status).toBe(410);
-    expect((await h.call("PUT", `/api/routes/${r.id}`, { body: { data: routeData() }, headers: { "X-Edit-Key": token() } })).status).toBe(403);
-    expect((await h.call("DELETE", `/api/routes/${r.id}`, { headers: { "X-Edit-Key": r.editKey } })).status).toBe(410);
-    expect((await h.call("POST", "/api/routes", { body: { data: routeData(), editKey: r.editKey } })).status).toBe(410);
   });
 
   it("非公開: 取得・上書き・削除は 404", async () => {

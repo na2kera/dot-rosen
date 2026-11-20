@@ -4,12 +4,12 @@ import { formatIssueNo } from "../../../shared/card/index.ts";
 import { parseRouteData, type RouteData } from "../../../shared/route/index.ts";
 import { errorMessage } from "../../api/client.ts";
 import { useApp, useDraft } from "../../app/AppContext.tsx";
+import { DeleteRouteButton } from "../../app/DeleteRouteButton.tsx";
 import { getApi, getPublish } from "../../app/services.ts";
 import { CardView } from "../../card/CardView.tsx";
 import { ImageSaver } from "../../card/ImageSaver.tsx";
 import { previewLook } from "../../card/card-input.ts";
 import { routeUrl, useBitmapFont, useCard, useServerCardLook } from "../../card/useCard.ts";
-import { localMonthDay } from "../../store/dates.ts";
 import { getEventCode } from "../../store/device.ts";
 import { isTerminal, PRINT_RECORD_REASON, type PublishState } from "../../store/publish-store.ts";
 import { routeErrorStep, routeErrorText } from "../../store/route-errors.ts";
@@ -44,7 +44,6 @@ export function FinishStep() {
   const look = previewLook(printedSame ? rec!.card : null, serverLook);
   const card = useCard(routeData, data.index.lookup, font, {
     routeId: clean ? saved!.id : null,
-    expiresAt: clean ? saved!.expiresAt : null,
     issueNo: printedSame ? rec!.issueNo : null,
     issuedOn: printedSame ? rec!.issuedOn : null,
     look,
@@ -91,21 +90,10 @@ export function FinishStep() {
 
 // ---- 保存と URL ----
 
-function ExpiryNote({ expiresAt }: { expiresAt: string | null }) {
-  const day = localMonthDay(expiresAt);
-  if (!day) return null;
-  return (
-    <p className="expiry">
-      <strong>{day}</strong>まで見られます。画像は早めに保存してね
-    </p>
-  );
-}
-
 function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState }) {
   const publish = getPublish();
   const status = publish.saveStatus(data);
-  // 期限切れの URL は出さない（保存すると新しい URL になる）
-  const saved = pub.saved?.id && status !== "expired" ? pub.saved : null;
+  const saved = pub.saved?.id ? pub.saved : null;
   const clean = status === "clean";
   const url = saved ? routeUrl(saved.id!) : null;
   const mode = (useApp().storage as { mode?: string }).mode ?? "ok";
@@ -153,7 +141,6 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
                 </Button>
               )}
             </div>
-            <ExpiryNote expiresAt={saved.expiresAt} />
           </>
         )}
         {clean ? (
@@ -165,16 +152,17 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
           </p>
         ) : (
           <>
-            {status === "expired" && <p className="save__dirty">前の URL は見られる期限が切れました。保存すると、新しい URL をつくります</p>}
             {saved && <p className="save__dirty">変更があります。保存しなおすと、同じ URL の中身が新しくなります</p>}
             {!saved && <p className="save__note">この URL を知っている人は誰でも見られます</p>}
             {mode !== "ok" && <p className="text-alert">この端末には保存できないため、URL を作れません（プライベートモードや空き容量を確かめてね）</p>}
             <Button variant="primary" block icon="save" onClick={onSave} disabled={!data} aria-busy={pub.saving}>
-              {pub.saving ? "保存しています…" : status === "expired" ? "新しい URL をつくる" : saved ? "保存しなおす" : "保存して URL をつくる"}
+              {pub.saving ? "保存しています…" : saved ? "保存しなおす" : "保存して URL をつくる"}
             </Button>
           </>
         )}
         {pub.saveError && !pub.saving && !(pub.saveError.code === "storage" && mode !== "ok") && <p className="text-alert">{errorMessage(pub.saveError)}</p>}
+        {/* 保存ずみのときだけ、目立たないように小さく置く。消すと未保存に戻る（作りかけは残る） */}
+        {saved && !pub.saving && <DeleteRouteButton id={saved.id!} className="save__delete" />}
       </div>
     </Panel>
   );
@@ -285,11 +273,9 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
       )}
       {pub.printError && !pub.requesting && !(pub.printError.code === "not_accepting" && event === "closed") && (
         <p className="text-alert">
-          {pub.printError.code === "expired"
-            ? "保存した路線の期限が切れていました。もういちど押すと、新しい URL で保存してから申し込みます"
-            : pub.printError.code === "storage" && pub.printError.reason === PRINT_RECORD_REASON
-              ? "この端末に保存できないため、印刷を申し込めません（プライベートモードや空き容量を確かめてね）"
-              : errorMessage(pub.printError)}
+          {pub.printError.code === "storage" && pub.printError.reason === PRINT_RECORD_REASON
+            ? "この端末に保存できないため、印刷を申し込めません（プライベートモードや空き容量を確かめてね）"
+            : errorMessage(pub.printError)}
         </p>
       )}
     </Panel>

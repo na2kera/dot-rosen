@@ -23,14 +23,12 @@
     }
   ],
   "vars": {
-    // 路線の有効期限（最初の保存からの日数）
-    "EXPIRY_DAYS": "30",
     // 路線カードの模様セット: "light" | "bold"
     "CARD_MONO_SET": "bold",
     // 路線カードの側面の置き方: "two-x1" | "lead-x2" | "two-x2-rotated"
     "CARD_SIDE_LAYOUT": "two-x1"
   },
-  // 1日1回の掃除（期限切れの路線、古い印刷記録、古い回数制限）。UTC 18:00 = 日本時間 3:00
+  // 1日1回の掃除（古い印刷記録、古い回数制限。路線は消さない）。UTC 18:00 = 日本時間 3:00
   "triggers": { "crons": ["0 18 * * *"] },
   "observability": { "enabled": true }
 }

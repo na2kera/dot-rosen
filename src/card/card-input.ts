@@ -2,14 +2,13 @@
 import type { CardInput, CardLook } from "../../shared/card/index.ts";
 import type { BitmapFont } from "../../shared/font/index.ts";
 import type { RouteData, StationLookup } from "../../shared/route/index.ts";
-import { jstDate, jstMonthDay } from "../store/dates.ts";
+import { jstDate } from "../store/dates.ts";
 
 export const APP_NAME = "ドット路線メーカー";
 
 export type CardInputOptions = {
   /** 保存済みなら路線ページの URL（QR コードに入れる） */
   url: string | null;
-  expiresAt: string | null;
   /** 印刷を申し込んだときの発行番号と日付（無ければ「No.----」と今日） */
   issueNo?: number | null;
   issuedOn?: string | null;
@@ -34,7 +33,6 @@ export function cardInputs(
     font,
     issueNo: opts.issueNo ?? null,
     issuedOn: opts.issuedOn ?? jstDate(today),
-    expiresOn: opts.expiresAt ? jstMonthDay(new Date(opts.expiresAt)) : undefined,
     url: opts.url ?? undefined,
     appName: APP_NAME,
   };

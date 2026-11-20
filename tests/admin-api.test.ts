@@ -51,7 +51,7 @@ describe("送るもの", () => {
   });
 
   it("routes は一覧を返す", async () => {
-    const { api } = fake(() => json({ routes: [{ id: "x", name: "a", createdAt: "", expiresAt: "", hidden: false }] }));
+    const { api } = fake(() => json({ routes: [{ id: "x", name: "a", createdAt: "", hidden: false }] }));
     expect(await api.routes()).toHaveLength(1);
   });
 });

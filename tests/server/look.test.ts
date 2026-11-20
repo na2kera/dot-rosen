@@ -18,7 +18,6 @@ beforeEach(async () => {
   h.clock.set("2026-11-20T03:00:00.000Z");
   delete h.vars.CARD_MONO_SET;
   delete h.vars.CARD_SIDE_LAYOUT;
-  delete h.vars.EXPIRY_DAYS;
 });
 
 type Printed = { jobId: number; height: number; raster: Uint8Array };
@@ -232,17 +231,15 @@ describe("GET /api/config", () => {
     const res = await h.call("GET", "/api/config");
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-    expect(await json(res)).toEqual({ card: { monoSet: "bold", sideLayout: "two-x1" }, expiryDays: 30 });
+    expect(await json(res)).toEqual({ card: { monoSet: "bold", sideLayout: "two-x1" } });
   });
 
   it("vars を変えると変わる。不正な値は既定値", async () => {
     h.vars.CARD_MONO_SET = "light";
     h.vars.CARD_SIDE_LAYOUT = "lead-x2";
-    h.vars.EXPIRY_DAYS = "7";
-    expect(await json(await h.call("GET", "/api/config"))).toEqual({ card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 7 });
+    expect(await json(await h.call("GET", "/api/config"))).toEqual({ card: { monoSet: "light", sideLayout: "lead-x2" } });
     h.vars.CARD_MONO_SET = "dark";
     h.vars.CARD_SIDE_LAYOUT = "x";
-    h.vars.EXPIRY_DAYS = "0";
-    expect(await json(await h.call("GET", "/api/config"))).toEqual({ card: { monoSet: "bold", sideLayout: "two-x1" }, expiryDays: 30 });
+    expect(await json(await h.call("GET", "/api/config"))).toEqual({ card: { monoSet: "bold", sideLayout: "two-x1" } });
   });
 });

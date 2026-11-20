@@ -299,7 +299,7 @@ describe("#5 路線ページの「編集する」", () => {
     // 路線ページで A を表示したあと、別のタブが B に更新した
     const shown = { data: a, rev: revOf(a) };
     await tab(server, storage).save(data("B線"));
-    expect(p.markSaved(id, shown.data, "2026-12-20T00:00:00.000Z", shown.rev)).toBe(true);
+    expect(p.markSaved(id, shown.data, shown.rev)).toBe(true);
     expect(p.saveStatus(a)).toBe("dirty");
     const n = server.calls.length;
     expect(await p.save(a)).toBe(true);
@@ -311,7 +311,7 @@ describe("#5 路線ページの「編集する」", () => {
     const a = data("A線");
     await p.save(a);
     const id = p.store.get().saved!.id!;
-    expect(p.markSaved(id, a, "2026-12-20T00:00:00.000Z", revOf(a))).toBe(true);
+    expect(p.markSaved(id, a, revOf(a))).toBe(true);
     expect(p.saveStatus(a)).toBe("clean");
     const n = server.calls.length;
     await p.save(a);
@@ -341,7 +341,7 @@ describe("古い記録", () => {
     const first = tab(server, storage);
     await first.save(data());
     const old = readSaved(storage)!;
-    storage.setItem(STORAGE_KEYS.saved, JSON.stringify({ editKey: old.editKey, id: old.id, expiresAt: old.expiresAt, savedJson: old.savedJson }));
+    storage.setItem(STORAGE_KEYS.saved, JSON.stringify({ editKey: old.editKey, id: old.id, expiresAt: "2026-12-20T00:00:00.000Z", savedJson: old.savedJson }));
     const p = tab(server, storage);
     expect(p.saveStatus(data())).toBe("dirty");
     expect(await p.save(data())).toBe(true);
@@ -462,11 +462,11 @@ describe("#8 設定の取得が複数回時間切れ", () => {
     await vi.advanceTimersByTimeAsync(5000);
     await p2;
     expect(releases).toHaveLength(2);
-    releases[0](json({ card: { monoSet: "light", sideLayout: "lead-x2" }, expiryDays: 7 }));
+    releases[0](json({ card: { monoSet: "light", sideLayout: "lead-x2" } }));
     await vi.advanceTimersByTimeAsync(0);
-    releases[1](json({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" }, expiryDays: 30 }));
+    releases[1](json({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" } }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(loader.store.get()).toEqual({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" }, expiryDays: 30 });
-    expect(await loader.load()).toEqual({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" }, expiryDays: 30 });
+    expect(loader.store.get()).toEqual({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" } });
+    expect(await loader.load()).toEqual({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" } });
   });
 });

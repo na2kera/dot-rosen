@@ -6,11 +6,9 @@ import { createStore, type Store } from "./create-store.ts";
 
 export type ServerConfig = {
   readonly card: CardLook;
-  /** 有効期限の日数（取れなければ null） */
-  readonly expiryDays: number | null;
 };
 
-export const DEFAULT_SERVER_CONFIG: ServerConfig = { card: DEFAULT_CARD_LOOK, expiryDays: null };
+export const DEFAULT_SERVER_CONFIG: ServerConfig = { card: DEFAULT_CARD_LOOK };
 
 /** 取得を待つ上限。これを過ぎたら既定値で進める（読み込みを止めない） */
 export const CONFIG_TIMEOUT_MS = 5000;
@@ -18,11 +16,7 @@ export const CONFIG_TIMEOUT_MS = 5000;
 /** 応答を読む。足りない・不正な項目は既定値にする */
 export function parseServerConfig(v: unknown): ServerConfig {
   const r = typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
-  const days = r.expiryDays;
-  return {
-    card: toCardLook(r.card),
-    expiryDays: typeof days === "number" && Number.isInteger(days) && days > 0 ? days : null,
-  };
+  return { card: toCardLook(r.card) };
 }
 
 export type ConfigLoader = {

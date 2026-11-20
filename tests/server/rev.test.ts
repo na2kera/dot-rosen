@@ -59,8 +59,8 @@ describe("保存の応答の rev", () => {
 
     const res = await put(r, routeData({ name: "二回目" }));
     expect(res.status).toBe(200);
-    const body = await json<{ ok: boolean; expiresAt: string; rev: string }>(res);
-    expect(body).toEqual({ ok: true, expiresAt: r.expiresAt, rev: await currentRev(h, r.id) });
+    const body = await json<{ ok: boolean; rev: string }>(res);
+    expect(body).toEqual({ ok: true, rev: await currentRev(h, r.id) });
     expect(body.rev).not.toBe(r.rev);
     expect((await json<{ rev: string }>(await h.call("GET", `/api/routes/${r.id}`))).rev).toBe(body.rev);
 

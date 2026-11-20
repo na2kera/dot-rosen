@@ -69,7 +69,6 @@ export function warmUpCard(
       {
         route,
         issuedOn: "2026.11.20",
-        expiresOn: "12月20日",
         url: `https://dot-rosen.example/r/WARMUP${String(i).padStart(10, "0")}`,
         appName: APP_NAME,
         monoSet: opts.monoSet,

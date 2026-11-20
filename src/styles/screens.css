@@ -645,11 +645,8 @@
   color: inherit;
 }
 
-.expiry strong {
-  font-weight: normal;
-  padding: 0 4px;
-  background: var(--c-ink);
-  color: var(--c-on-ink);
+.save__delete {
+  justify-self: start;
 }
 
 .image-saver {
@@ -719,13 +716,8 @@
   padding-right: 0;
 }
 
-.route-page__expiry,
 .route-page__actions {
   padding: 0 var(--pad);
-}
-
-.route-page__expiry {
-  margin-bottom: 12px;
 }
 
 .route-page__card .cardview__scroll {

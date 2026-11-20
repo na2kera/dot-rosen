@@ -55,8 +55,9 @@ describe("印刷の申し込み", () => {
       .bind(body.jobId)
       .first<{ snapshot: string; height: number; len: number }>();
     const snap = JSON.parse(row!.snapshot);
-    // 2026-11-20T03:00Z は日本時間 11/20 12:00。期限は 30 日後
-    expect(snap).toMatchObject({ issuedOn: "2026.11.20", expiresOn: "12月20日", url: `https://dot-rosen.test/r/${r.id}`, monoSet: "bold", sideLayout: "two-x1" });
+    // 2026-11-20T03:00Z は日本時間 11/20 12:00。期限は無いので期限の日付は入れない
+    expect(snap).not.toHaveProperty("expiresOn");
+    expect(snap).toMatchObject({ issuedOn: "2026.11.20", url: `https://dot-rosen.test/r/${r.id}`, monoSet: "bold", sideLayout: "two-x1" });
     expect(snap.route.name).toBe("テスト線");
     expect(row!.len).toBe(row!.height * 48);
   });
@@ -66,7 +67,7 @@ describe("印刷の申し込み", () => {
     const r = await createRoute(h);
     const { jobId } = await json<PrintRes>(await apply(h, r));
     const row = await h.db.prepare("SELECT snapshot FROM print_jobs WHERE id = ?1").bind(jobId).first<{ snapshot: string }>();
-    expect(JSON.parse(row!.snapshot)).toMatchObject({ issuedOn: "2026.11.21", expiresOn: "12月21日" });
+    expect(JSON.parse(row!.snapshot)).toMatchObject({ issuedOn: "2026.11.21" });
   });
 
   it("CARD_MONO_SET と CARD_SIDE_LAYOUT で路線カードの設定を変えられる", async () => {
@@ -98,15 +99,15 @@ describe("印刷の申し込み", () => {
     expect(await res.json()).toEqual({ error: "not_accepting" });
   });
 
-  it("路線の鍵が違えば 403、無い路線は 404、期限切れは 410、非公開は 404", async () => {
+  it("路線の鍵が違えば 403、無い路線は 404、非公開は 404。作ってから何日たっても申し込める", async () => {
     const r = await createRoute(h);
     expect((await apply(h, { id: r.id, editKey: token() })).status).toBe(403);
     expect((await apply(h, { id: "AAAAAAAAAAAAAAAA", editKey: r.editKey })).status).toBe(404);
     await h.db.prepare("UPDATE routes SET hidden = 1 WHERE id = ?1").bind(r.id).run();
     expect((await apply(h, r)).status).toBe(404);
     await h.db.prepare("UPDATE routes SET hidden = 0 WHERE id = ?1").bind(r.id).run();
-    h.clock.advance(31 * 24 * 3600_000);
-    expect((await apply(h, r)).status).toBe(410);
+    h.clock.advance(400 * 24 * 3600_000);
+    expect((await apply(h, r)).status).toBe(200);
   });
 
   it("入力の長さと文字種", async () => {

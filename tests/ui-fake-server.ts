@@ -70,23 +70,22 @@ export function fakeServer() {
 
   function handle(c: Call): Response {
     const m = c.path.match(/^\/api\/routes(?:\/([^/?]+))?/);
-    const expiresAt = "2026-12-20T00:00:00.000Z";
     if (m && c.method === "POST") {
       const key = String(c.body!.editKey);
       for (const [id, r] of routes)
         if (r.key === key) {
           r.data = c.body!.data;
           r.rev = revOf(r.data);
-          return json(200, { id, expiresAt, rev: r.rev });
+          return json(200, { id, rev: r.rev });
         }
       const id = `ROUTE${String(++seq).padStart(11, "0")}`;
       routes.set(id, { key, data: c.body!.data, rev: revOf(c.body!.data) });
-      return json(200, { id, expiresAt, rev: revOf(c.body!.data) });
+      return json(200, { id, rev: revOf(c.body!.data) });
     }
     if (m && c.method === "GET" && m[1]) {
       const r = routes.get(m[1]);
       if (!r) return json(404, { error: "not_found" });
-      return json(200, { id: m[1], data: r.data, expiresAt, rev: r.rev });
+      return json(200, { id: m[1], data: r.data, rev: r.rev });
     }
     if (m && c.method === "PUT") {
       const r = routes.get(m[1]);
@@ -94,7 +93,7 @@ export function fakeServer() {
       if (r.key !== c.headers["X-Edit-Key"]) return json(403, { error: "forbidden" });
       r.data = c.body!.data;
       r.rev = revOf(r.data);
-      return json(200, { ok: true, expiresAt, rev: r.rev });
+      return json(200, { ok: true, rev: r.rev });
     }
     if (m && c.method === "DELETE") {
       const r = routes.get(m[1]);

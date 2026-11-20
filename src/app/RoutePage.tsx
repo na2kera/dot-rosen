@@ -9,7 +9,6 @@ import { useBitmapFont, useCard, useServerCardLook } from "../card/useCard.ts";
 import { buildStationIndex, type StationIndex } from "../data/station-index.ts";
 import { navigate } from "../router.ts";
 import { browserStorage } from "../store/browser.ts";
-import { localMonthDay } from "../store/dates.ts";
 import { safeGet, STORAGE_KEYS } from "../store/kv-storage.ts";
 import { restoreDraft, writeDraft } from "../store/route-store.ts";
 import { useStore } from "../store/use-store.ts";
@@ -19,6 +18,7 @@ import { confirmDialog, DialogHost } from "../ui/Dialog.tsx";
 import { Loading } from "../ui/Loading.tsx";
 import { Panel } from "../ui/Panel.tsx";
 import { toast, ToastHost } from "../ui/Toast.tsx";
+import { DeleteRouteButton } from "./DeleteRouteButton.tsx";
 import { getApi, getConfig, getPublish, setInitialStep } from "./services.ts";
 
 let indexPromise: Promise<StationIndex> | null = null;
@@ -38,7 +38,7 @@ function loadIndex(): Promise<StationIndex> {
 }
 
 /** rev は、data と同じ応答の版の印（無い・形が違えば null） */
-type Loaded = { index: StationIndex; data: RouteData; expiresAt: string; rev: string | null };
+type Loaded = { index: StationIndex; data: RouteData; rev: string | null };
 type State = { kind: "loading" } | { kind: "ok"; v: Loaded } | { kind: "error"; fail: ApiFailure | null } | { kind: "deleted" };
 
 export function RoutePage({ id }: { id: string }) {
@@ -55,7 +55,7 @@ export function RoutePage({ id }: { id: string }) {
         if (!r.ok) return setState({ kind: "error", fail: r });
         const parsed = parseRouteData(r.value.data, index.lookup);
         if (!parsed.ok) return setState({ kind: "error", fail: { ok: false, code: "invalid", status: 200, reason: parsed.error } });
-        setState({ kind: "ok", v: { index, data: parsed.value, expiresAt: r.value.expiresAt, rev: typeof r.value.rev === "string" ? r.value.rev : null } });
+        setState({ kind: "ok", v: { index, data: parsed.value, rev: typeof r.value.rev === "string" ? r.value.rev : null } });
       },
       () => alive && setState({ kind: "error", fail: null }),
     );
@@ -108,12 +108,6 @@ function RouteError({ fail, onRetry }: { fail: ApiFailure | null; onRetry(): voi
         <p>この路線は見つかりませんでした。URL がまちがっているか、消された路線です。</p>
       </Message>
     );
-  if (fail?.code === "expired")
-    return (
-      <Message heading="期限切れ">
-        <p>この路線は 見られる期限が過ぎました。</p>
-      </Message>
-    );
   return (
     <Message heading="よみこめません" onRetry={onRetry}>
       <p>{fail ? errorMessage(fail) : "よみこめませんでした。電波のよい所で もういちど ためしてね"}</p>
@@ -127,9 +121,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
   const owner = pub.saved?.id === id;
   const { font, error: fontError, retry } = useBitmapFont();
   const look = useServerCardLook();
-  const card = useCard(v.data, v.index.lookup, font, { routeId: id, expiresAt: v.expiresAt, look });
-  const [busy, setBusy] = useState(false);
-  const day = localMonthDay(v.expiresAt);
+  const card = useCard(v.data, v.index.lookup, font, { routeId: id, look });
 
   const edit = useCallback(async () => {
     const storage = browserStorage();
@@ -141,7 +133,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
     }
     // 端末に書けてから移る（書けないまま移ると、作る画面で前の作りかけが出てしまう）。
     // 読んだときの rev が端末の保存記録と同じときだけ保存ずみとして引き継ぐ（違えば結果不明。印刷の食い違いは stale で拾う）
-    if (!publish.markSaved(id, v.data, v.expiresAt, v.rev) || !writeDraft(storage, v.data)) {
+    if (!publish.markSaved(id, v.data, v.rev) || !writeDraft(storage, v.data)) {
       toast("この端末に保存できないため、編集を始められません（プライベートモードや空き容量を確かめてね）", { tone: "alert", ms: 5000 });
       return;
     }
@@ -149,31 +141,8 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
     navigate("/");
   }, [id, v, publish]);
 
-  const remove = async () => {
-    const ok = await confirmDialog(
-      <>
-        <p>この路線を消しますか？</p>
-        <p className="text-weak">URL は開けなくなり、もとには戻せません。印刷待ちの申し込みも取り消されます。</p>
-      </>,
-      { ok: "消す", danger: true },
-    );
-    if (!ok) return;
-    setBusy(true);
-    const r = await publish.deleteRoute(id);
-    setBusy(false);
-    if (r.ok) {
-      toast("路線を消しました");
-      onDeleted();
-    } else toast(errorMessage(r), { tone: "alert" });
-  };
-
   return (
     <div className="app__scroll route-page">
-      {day && (
-        <p className="expiry route-page__expiry">
-          <strong>{day}</strong>まで見られます。画像は早めに保存してね
-        </p>
-      )}
       <div className="route-page__card">
         {fontError ? (
           <div className="notice">
@@ -194,11 +163,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
         <Button block onClick={() => navigate("/")}>
           自分も作ってみる
         </Button>
-        {owner && (
-          <Button variant="danger" block icon="trash" onClick={remove} disabled={busy}>
-            この路線を消す
-          </Button>
-        )}
+        {owner && <DeleteRouteButton id={id} block onDeleted={onDeleted} />}
       </div>
     </div>
   );

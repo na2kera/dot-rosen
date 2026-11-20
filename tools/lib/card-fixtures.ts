@@ -98,7 +98,6 @@ export class FixtureKit {
       font: this.font,
       issueNo: 42,
       issuedOn: "2026.11.20",
-      expiresOn: "12月20日",
       url: SAMPLE_URL,
       appName: APP_NAME,
       ...extra,
@@ -128,7 +127,7 @@ export function cardFixtures(kit: FixtureKit): CardFixture[] {
     { id: "loop-30st", label: "環状線 30 駅", input: kit.input(loop) },
     { id: "ascii-name", label: "半角英数と記号の路線名", input: kit.input(ascii) },
     { id: "unknown-glyph", label: "フォントに無い文字を含む路線名", input: kit.input(unknown) },
-    { id: "preview-no-url", label: "プレビュー（未発行・URL なし）", input: kit.input(mid, { issueNo: null, url: undefined, expiresOn: undefined }) },
+    { id: "preview-no-url", label: "プレビュー（未発行・URL なし）", input: kit.input(mid, { issueNo: null, url: undefined }) },
   ];
   for (const side of ["two-x1", "lead-x2", "two-x2-rotated"] as const) {
     for (const mono of ["light", "bold"] as const) {

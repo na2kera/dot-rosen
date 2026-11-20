@@ -36,7 +36,7 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("保存", () => {
-  it("鍵を端末に書いてから POST し、成功したら id と期限を書く。2回目は PUT（X-Edit-Key つき）", async () => {
+  it("鍵を端末に書いてから POST し、成功したら id を書く（期限は無い）。2回目は PUT（X-Edit-Key つき）", async () => {
     const { server, storage, p } = setup();
     let keyAtPost: string | null = null;
     server.override((c) => {
@@ -48,7 +48,8 @@ describe("保存", () => {
     const saved = readSaved(storage)!;
     expect(saved.editKey).toMatch(/^[A-Za-z0-9_-]{22,}$/);
     expect(saved.id).toBe("ROUTE00000000001");
-    expect(saved.expiresAt).toBe("2026-12-20T00:00:00.000Z");
+    expect(saved).not.toHaveProperty("expiresAt");
+    expect(JSON.parse(storage.getItem(STORAGE_KEYS.saved)!)).not.toHaveProperty("expiresAt");
     expect(p.isSaved(data())).toBe(true);
     // 内容を変えたら「変更あり」
     expect(p.isSaved(data("ちがう線"))).toBe(false);
@@ -83,11 +84,11 @@ describe("保存", () => {
     expect(server.calls.filter((c) => c.method === "POST")).toHaveLength(1);
   });
 
-  it("PUT が 410（期限切れ）なら、新しい鍵で作り直す", async () => {
+  it("PUT が 404（消された）なら、新しい鍵で作り直す", async () => {
     const { server, p } = setup();
     await p.save(data());
     const oldKey = p.store.get().saved!.editKey;
-    server.override(() => server.json(410, { error: "expired" }));
+    server.override(() => server.json(404, { error: "not_found" }));
     expect(await p.save(data("新しい線"))).toBe(true);
     const s = p.store.get().saved!;
     expect(s.editKey).not.toBe(oldKey);
@@ -112,6 +113,8 @@ describe("保存", () => {
     expect((await p.deleteRoute(id)).ok).toBe(true);
     expect(storage.getItem(STORAGE_KEYS.saved)).toBeNull();
     expect(p.owns(id)).toBe(false);
+    // 未保存に戻る（「保存して URL をつくる」が出る）
+    expect(p.saveStatus(data())).toBe("none");
   });
 });
 
@@ -288,8 +291,8 @@ describe("指摘1: 端末に書けないとき", () => {
     await p.save(data());
     const id = p.store.get().saved!.id!;
     const { p: p2 } = setup({ storage: Object.assign(failingStorage([STORAGE_KEYS.saved]), { getItem: storage.getItem }) });
-    expect(p2.markSaved(id, data(), "2026-12-20T00:00:00.000Z", revOf(data()))).toBe(false);
-    expect(p.markSaved(id, data(), "2026-12-20T00:00:00.000Z", revOf(data()))).toBe(true);
+    expect(p2.markSaved(id, data(), revOf(data()))).toBe(false);
+    expect(p.markSaved(id, data(), revOf(data()))).toBe(true);
   });
 });
 
@@ -378,33 +381,42 @@ describe("指摘6: 結果が分からない申し込みのあとで内容を変�
   });
 });
 
-describe("指摘8: 期限切れ", () => {
-  it("期限切れなら内容が同じでも保存ずみにせず、保存すると新しい URL を作る", async () => {
+describe("期限は無い（Issue #1）", () => {
+  it("何日たっても保存ずみのまま。保存し直しても送らず、URL も変わらない", async () => {
     let t = new Date("2026-11-20T00:00:00Z");
     const { server, p } = setup({ now: () => t });
     await p.save(data());
+    const id = p.store.get().saved!.id;
+    t = new Date("2028-01-01T00:00:00Z");
+    expect(p.isSaved(data())).toBe(true);
     expect(p.saveStatus(data())).toBe("clean");
-    t = new Date("2026-12-21T00:00:00Z");
-    expect(p.isSaved(data())).toBe(false);
-    expect(p.saveStatus(data())).toBe("expired");
-    const oldKey = p.store.get().saved!.editKey;
+    const n = server.calls.length;
     expect(await p.save(data())).toBe(true);
-    const last = server.calls[server.calls.length - 1];
-    expect(last.method).toBe("POST");
-    expect(last.body!.editKey).not.toBe(oldKey);
-    expect(p.store.get().saved!.id).toBe("ROUTE00000000002");
+    expect(server.calls.length).toBe(n);
+    expect(p.store.get().saved!.id).toBe(id);
   });
 
-  it("印刷で expired が返ったら、保存ずみ扱いをやめる（次は保存し直してから申し込む）", async () => {
+  it("端末に残った古い記録の expiresAt（過去の日付）は読み捨て、保存ずみのまま扱う", async () => {
+    const storage = memoryStorage();
+    const first = setup({ storage });
+    await first.p.save(data());
+    const rec = JSON.parse(storage.getItem(STORAGE_KEYS.saved)!) as Record<string, unknown>;
+    storage.setItem(STORAGE_KEYS.saved, JSON.stringify({ ...rec, expiresAt: "2026-01-01T00:00:00.000Z" }));
+    const saved = readSaved(storage)!;
+    expect(saved).not.toHaveProperty("expiresAt");
+    expect(saved.id).toBe(rec.id);
+    const { p } = setup({ storage, now: () => new Date("2027-01-01T00:00:00Z") });
+    expect(p.saveStatus(data())).toBe("clean");
+    expect(p.isSaved(data())).toBe(true);
+  });
+
+  it("410 が返っても期限切れ扱いはしない（エラーとして出すだけ）", async () => {
     const { server, p } = setup();
     await p.save(data());
     server.override(() => server.json(410, { error: "expired" }));
     expect(await p.requestPrint(data(), "CODE1")).toBe(false);
-    expect(p.store.get().printError?.code).toBe("expired");
-    expect(p.saveStatus(data())).toBe("expired");
-    expect(await p.requestPrint(data(), "CODE1")).toBe(true);
-    expect(server.calls.filter((c) => c.method === "POST" && c.path === "/api/routes")).toHaveLength(2);
-    p.stopPolling();
+    expect(p.store.get().printError?.code).toBe("internal");
+    expect(p.saveStatus(data())).toBe("clean");
   });
 });
 

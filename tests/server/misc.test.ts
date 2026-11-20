@@ -64,7 +64,7 @@ describe("回数制限", () => {
 });
 
 describe("定期実行の掃除", () => {
-  it("期限切れの路線とその印刷記録、終わって 30 日たった印刷記録、古い回数制限を消す", async () => {
+  it("終わって 30 日たった印刷記録と古い回数制限を消す。路線は何日たっても消さない", async () => {
     const old = await createRoute(h);
     await apply(h, old);
     h.clock.advance(20 * 24 * 3600_000);
@@ -76,29 +76,31 @@ describe("定期実行の掃除", () => {
     expect(c2!.jobId).toBe(done.jobId);
     await printer(h, "POST", `/api/printer/jobs/${c2!.jobId}/done`, { ok: true });
 
-    // old の期限（作成から 30 日）を過ぎた時点
+    // old の作成から 31 日（以前の期限の 30 日を過ぎた時点）。印刷が終わってからは 11 日
     h.clock.advance(11 * 24 * 3600_000);
     let r = await cleanup(h.db, h.clock.now());
-    expect(r).toMatchObject({ routes: 1, jobs: 1 });
+    expect(r).toMatchObject({ jobs: 0 });
+    expect(r).not.toHaveProperty("routes");
     expect(r.rateLimits).toBeGreaterThan(0);
-    expect((await h.call("GET", `/api/routes/${old.id}`)).status).toBe(404);
+    expect((await h.call("GET", `/api/routes/${old.id}`)).status).toBe(200);
     expect((await h.call("GET", `/api/routes/${fresh.id}`)).status).toBe(200);
-    const left = await h.db.prepare("SELECT id FROM print_jobs").all<{ id: number }>();
-    expect(left.results.map((x) => x.id)).toEqual([done.jobId]);
+    expect((await h.db.prepare("SELECT COUNT(*) AS n FROM print_jobs").first<{ n: number }>())!.n).toBe(2);
 
-    // fresh の印刷が終わってから 30 日（fresh 自体はまだ期限内にしておく）
-    await h.db.prepare("UPDATE routes SET expires_at = '2027-12-31T00:00:00.000Z' WHERE id = ?1").bind(fresh.id).run();
+    // 印刷が終わってから 31 日: 印刷記録は消えるが、路線は残る
     h.clock.advance(20 * 24 * 3600_000);
     r = await cleanup(h.db, h.clock.now());
-    expect(r).toMatchObject({ routes: 0, jobs: 1 });
+    expect(r).toMatchObject({ jobs: 2 });
     expect((await h.db.prepare("SELECT COUNT(*) AS n FROM print_jobs").first<{ n: number }>())!.n).toBe(0);
+    expect((await h.db.prepare("SELECT COUNT(*) AS n FROM routes").first<{ n: number }>())!.n).toBe(2);
+    expect((await h.call("GET", `/api/routes/${old.id}`)).status).toBe(200);
   });
 
-  it("待ちや印刷中の印刷記録は、期限内の路線なら消さない", async () => {
+  it("待ちの印刷記録と路線は、何日たっても消さない", async () => {
     const r = await createRoute(h);
     await apply(h, r);
-    h.clock.advance(29 * 24 * 3600_000);
-    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 0, jobs: 0 });
+    h.clock.advance(400 * 24 * 3600_000);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ jobs: 0 });
+    expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(200);
   });
 });
 

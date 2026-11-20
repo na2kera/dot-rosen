@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { toCardLook, type CardLook } from "../../shared/card/index.ts";
 import { parseRouteData } from "../../shared/route/index.ts";
 import { buildCardRaster, type CardSnapshot } from "../lib/card.ts";
-import { APP_NAME, cardOptions, iso, jstDate, jstMonthDay } from "../lib/config.ts";
+import { APP_NAME, cardOptions, iso, jstDate } from "../lib/config.ts";
 import { routeRev, safeEqual, sha256Hex } from "../lib/crypto.ts";
 import {
   ApiError,
@@ -54,7 +54,7 @@ async function existingJob(db: Db, clientId: string, requestId: string) {
 
 /**
  * 再送への応答。路線 ID が違えば 409、路線が無く鍵を確かめられなければ 404、鍵が違えば 403。
- * 路線が非公開・期限切れでも、鍵が合えば元の印刷の状態を返す（受付停止中でも返す）。
+ * 路線が非公開でも、鍵が合えば元の印刷の状態を返す（受付停止中でも返す）。
  * 画像がまだ入っていない（準備中の）印刷には成功を返さず、409 と Retry-After: 2。
  */
 async function replayResponse(db: Db, prev: ExistingJob, routeId: string, editKey: string, fallback: CardLook) {
@@ -94,7 +94,7 @@ async function progressResponse(db: Db, jobId: number, fallback: CardLook) {
 
 /**
  * 発行番号の採番、条件の確認、待ちへの追加を1つの batch で行う。
- * 1. 条件（受付中・会場コード・路線が存在し非公開でなく期限内で、保存内容が rev を照合したときに読んだ routeData と同じ・
+ * 1. 条件（受付中・会場コード・路線が存在し非公開でなく、保存内容が rev を照合したときに読んだ routeData と同じ・
  *    待ちの上限・回数上限）を満たし、同じ (clientId, requestId) が無ければ、sort_key = NULL（この batch で作った印）で追加する。
  *    発行番号は issue_counter + 1。
  * 2. 1 で追加した行（sort_key IS NULL）があるときだけ issue_counter を 1 増やす。
@@ -111,7 +111,7 @@ function enqueueStatements(
          SELECT ?1, ?2, ?3, ?4, 'queued', CAST(s.value AS INTEGER) + 1, NULL, ?5, ?6
          FROM settings s
          WHERE s.key = 'issue_counter'
-           AND EXISTS (SELECT 1 FROM routes WHERE id = ?1 AND hidden = 0 AND expires_at > ?6 AND data = ?8)
+           AND EXISTS (SELECT 1 FROM routes WHERE id = ?1 AND hidden = 0 AND data = ?8)
            AND (SELECT value FROM settings WHERE key = 'accepting') = '1'
            AND (SELECT value FROM settings WHERE key = 'event_code') = ?4
            AND (SELECT COUNT(*) FROM print_jobs WHERE status = 'queued') < ?7
@@ -135,14 +135,13 @@ function enqueueStatements(
 }
 
 /** 追加できなかった理由を、確かめる順に調べる */
-async function rejectReason(db: Db, clientId: string, eventCode: string, routeId: string, rev: string, now: Date): Promise<ApiError> {
+async function rejectReason(db: Db, clientId: string, eventCode: string, routeId: string, rev: string): Promise<ApiError> {
   const s = await readSettings(db);
   if (s.eventCode !== eventCode) return new ApiError(403, "invalid_code");
   if (!s.accepting) return new ApiError(409, "not_accepting");
-  // 路線を確かめたあとに、非公開化・削除・期限切れになった
+  // 路線を確かめたあとに、非公開化・削除になった
   const route = await loadRoute(db, routeId);
   if (!route || route.hidden) return notFound();
-  if (route.expires_at <= iso(now)) return new ApiError(410, "expired");
   // rev を照合したあとに、違う内容で上書きされた
   if ((await routeRev(route.data)) !== rev) return new ApiError(409, "stale");
   const row = await db
@@ -195,9 +194,9 @@ export function printApi(deps: Deps) {
     const prev = await existingJob(db, clientId, requestId);
     if (prev) return c.json(await replayResponse(db, prev, routeId, editKey, cardOptions(c.env)));
 
-    // 受付中か → 路線（期限内・非公開でない・鍵が合う）
+    // 受付中か → 路線（非公開でない・鍵が合う）
     if (!accepting) throw new ApiError(409, "not_accepting");
-    const route = await checkOwner(await loadRoute(db, routeId), editKey, now);
+    const route = await checkOwner(await loadRoute(db, routeId), editKey);
     // 版の印: 保存されている内容が申し込みの版と違えば、印刷を作らず 409 stale（回数も番号も消費しない）。
     // snapshot はこの照合と同じ読み出し（route.data）から作る。待ちへ追加する文の中でも保存内容がこの route.data と
     // 同じことを確かめるので、照合のあとに上書きが来たら追加せず 409 stale になる
@@ -210,7 +209,6 @@ export function printApi(deps: Deps) {
       route: parsed.value,
       rev,
       issuedOn: jstDate(now),
-      expiresOn: jstMonthDay(new Date(route.expires_at)),
       url: `${new URL(c.req.url).origin}/r/${routeId}`,
       appName: APP_NAME,
       monoSet: opts.monoSet,
@@ -227,7 +225,7 @@ export function printApi(deps: Deps) {
       // 同時に届いた同じ申し込みに先を越された
       const again = await existingJob(db, clientId, requestId);
       if (again) return c.json(await replayResponse(db, again, routeId, editKey, opts));
-      throw await rejectReason(db, clientId, eventCode, routeId, rev, now);
+      throw await rejectReason(db, clientId, eventCode, routeId, rev);
     }
 
     // 発行番号が決まったので画像を組み立てて保存する。どちらかが失敗したら印刷を消し、回数を消費しない

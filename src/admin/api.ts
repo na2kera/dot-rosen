@@ -34,7 +34,6 @@ export type AdminRoute = {
   id: string;
   name: string | null;
   createdAt: string;
-  expiresAt: string;
   hidden: boolean;
 };
 

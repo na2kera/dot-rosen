@@ -1,7 +1,7 @@
 // 路線の保存・取得・上書き・削除（docs/api.md「4. 公開 API」）。
 import { Hono } from "hono";
 import { parseRouteData, type RouteData } from "../../shared/route/index.ts";
-import { addDays, expiryDays, iso } from "../lib/config.ts";
+import { iso } from "../lib/config.ts";
 import { newRouteId, routeRev, safeEqual, sha256Hex } from "../lib/crypto.ts";
 import { ApiError, asRecord, clientIp, EDIT_KEY_RE, notFound, readJson, ROUTE_ID_RE, str } from "../lib/http.ts";
 import { acquireAttempt } from "../lib/rate-limit.ts";
@@ -27,26 +27,21 @@ export type RouteRow = {
   edit_key_hash: string;
   data: string;
   created_at: string;
-  expires_at: string;
   hidden: number;
 };
 
 export async function loadRoute(db: Db, id: string): Promise<RouteRow | null> {
   return db
-    .prepare("SELECT id, edit_key_hash, data, created_at, expires_at, hidden FROM routes WHERE id = ?1")
+    .prepare("SELECT id, edit_key_hash, data, created_at, hidden FROM routes WHERE id = ?1")
     .bind(id)
     .first<RouteRow>();
 }
 
-/**
- * 編集の鍵で路線を確かめる。無い・非公開は 404、鍵が違えば 403、期限切れは 410。
- * 期限切れかどうかは、鍵が合った人にだけ知らせる。
- */
-export async function checkOwner(row: RouteRow | null, editKey: string | undefined, now: Date): Promise<RouteRow> {
+/** 編集の鍵で路線を確かめる。無い・非公開は 404、鍵が違えば 403 */
+export async function checkOwner(row: RouteRow | null, editKey: string | undefined): Promise<RouteRow> {
   if (!row || row.hidden) throw notFound();
   if (editKey === undefined || !EDIT_KEY_RE.test(editKey)) throw new ApiError(403, "forbidden");
   if (!(await safeEqual(await sha256Hex(editKey), row.edit_key_hash))) throw new ApiError(403, "forbidden");
-  if (row.expires_at <= iso(now)) throw new ApiError(410, "expired");
   return row;
 }
 
@@ -62,22 +57,21 @@ export function routesApi(deps: Deps) {
     const data = checkRouteData(body.data, deps.resources);
     const hash = await sha256Hex(editKey);
     const nowIso = iso(now);
-    // 同じ鍵ならその路線を上書きして同じ id を返す（期限内で非公開でないものだけ）
+    // 同じ鍵ならその路線を上書きして同じ id を返す（非公開でないものだけ）
     const row = await db
       .prepare(
-        `INSERT INTO routes (id, edit_key_hash, data, created_at, updated_at, expires_at, hidden)
-         VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)
+        `INSERT INTO routes (id, edit_key_hash, data, created_at, updated_at, hidden)
+         VALUES (?1, ?2, ?3, ?4, ?4, 0)
          ON CONFLICT (edit_key_hash) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
-           WHERE routes.hidden = 0 AND routes.expires_at > excluded.updated_at
-         RETURNING id, expires_at, data`,
+           WHERE routes.hidden = 0
+         RETURNING id, data`,
       )
-      .bind(newRouteId(), hash, JSON.stringify(data), nowIso, iso(addDays(now, expiryDays(c.env))))
-      .first<{ id: string; expires_at: string; data: string }>();
+      .bind(newRouteId(), hash, JSON.stringify(data), nowIso)
+      .first<{ id: string; data: string }>();
     // rev は上書き後に保存されている文字列から作る
-    if (row) return c.json({ id: row.id, expiresAt: row.expires_at, rev: await routeRev(row.data) });
-    const existing = await db.prepare("SELECT hidden, expires_at FROM routes WHERE edit_key_hash = ?1").bind(hash).first<{ hidden: number; expires_at: string }>();
-    if (!existing || existing.hidden) throw notFound();
-    throw new ApiError(410, "expired");
+    if (row) return c.json({ id: row.id, rev: await routeRev(row.data) });
+    // 同じ鍵の路線が非公開になっている
+    throw notFound();
   });
 
   app.get("/routes/:id", async (c) => {
@@ -85,8 +79,7 @@ export function routesApi(deps: Deps) {
     if (!ROUTE_ID_RE.test(id)) throw notFound();
     const row = await loadRoute(c.env.DB, id);
     if (!row || row.hidden) throw notFound();
-    if (row.expires_at <= iso(deps.now())) throw new ApiError(410, "expired");
-    return c.json({ id: row.id, data: JSON.parse(row.data) as RouteData, expiresAt: row.expires_at, rev: await routeRev(row.data) });
+    return c.json({ id: row.id, data: JSON.parse(row.data) as RouteData, rev: await routeRev(row.data) });
   });
 
   app.put("/routes/:id", async (c) => {
@@ -96,22 +89,22 @@ export function routesApi(deps: Deps) {
     if (!ROUTE_ID_RE.test(id)) throw notFound();
     const body = asRecord(await readJson(c));
     const data = checkRouteData(body.data, deps.resources);
-    const route = await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"), now);
+    const route = await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"));
     const nowIso = iso(now);
     const row = await db
       .prepare(
         `UPDATE routes SET data = ?1, updated_at = ?2
-         WHERE id = ?3 AND edit_key_hash = ?4 AND hidden = 0 AND expires_at > ?2
-         RETURNING expires_at, data`,
+         WHERE id = ?3 AND edit_key_hash = ?4 AND hidden = 0
+         RETURNING data`,
       )
       .bind(JSON.stringify(data), nowIso, id, route.edit_key_hash)
-      .first<{ expires_at: string; data: string }>();
+      .first<{ data: string }>();
     if (!row) {
-      // 確かめてから書くまでの間に、非公開・期限切れ・削除になった
-      await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"), now);
+      // 確かめてから書くまでの間に、非公開・削除になった
+      await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"));
       throw new ApiError(409, "conflict");
     }
-    return c.json({ ok: true, expiresAt: row.expires_at, rev: await routeRev(row.data) });
+    return c.json({ ok: true, rev: await routeRev(row.data) });
   });
 
   app.delete("/routes/:id", async (c) => {
@@ -119,7 +112,7 @@ export function routesApi(deps: Deps) {
     const now = deps.now();
     const id = c.req.param("id");
     if (!ROUTE_ID_RE.test(id)) throw notFound();
-    const route = await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"), now);
+    const route = await checkOwner(await loadRoute(db, id), c.req.header("X-Edit-Key"));
     // 待ちの印刷の取り消しと、路線の削除を1つのトランザクションで
     await db.batch([
       db

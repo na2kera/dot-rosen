@@ -32,8 +32,6 @@ export type CardInput = {
   issueNo: number | null;
   /** 発行日（「2026.11.20」） */
   issuedOn: string;
-  /** 期限（「12月20日」）。あれば「12月20日まで見られます」と印字 */
-  expiresOn?: string;
   /** QR コードにする URL。無ければ QR の段を省く */
   url?: string;
   /** アプリ名（「ドット路線メーカー」） */

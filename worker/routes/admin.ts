@@ -159,21 +159,20 @@ export function adminApi(deps: Deps) {
     const nowIso = iso(now);
     const id = jobIdParam(c.req.param("id"));
     const override = reprintLook(asRecord(await readJson(c, { optional: true })));
-    type Src = { status: JobStatus; issue_no: number; snapshot: string; route_hidden: number | null; route_expires: string | null; route_exists: string | null };
+    type Src = { status: JobStatus; issue_no: number; snapshot: string; route_hidden: number | null; route_exists: string | null };
     const load = () =>
       db
         .prepare(
-          `SELECT j.status, j.issue_no, j.snapshot, r.hidden AS route_hidden, r.expires_at AS route_expires, r.id AS route_exists
+          `SELECT j.status, j.issue_no, j.snapshot, r.hidden AS route_hidden, r.id AS route_exists
            FROM print_jobs j LEFT JOIN routes r ON r.id = j.route_id WHERE j.id = ?1`,
         )
         .bind(id)
         .first<Src>();
-    // 刷れない理由: 無い 404、終わっていない 409、路線が消えた・非公開 409、路線が期限切れ 410
+    // 刷れない理由: 無い 404、終わっていない 409、路線が消えた・非公開 409
     const reason = (src: Src | null): ApiError | null => {
       if (!src) return notFound();
       if (src.status !== "done" && src.status !== "failed") return conflict();
       if (src.route_exists === null || src.route_hidden) return conflict();
-      if (src.route_expires === null || src.route_expires <= nowIso) return new ApiError(410, "expired");
       return null;
     };
     const src = await load();
@@ -184,7 +183,8 @@ export function adminApi(deps: Deps) {
     let card;
     let snapshot: CardSnapshot;
     try {
-      const orig = JSON.parse(src!.snapshot) as CardSnapshot;
+      // 期限を廃止する前の記録には expiresOn（期限の日付）が残っていることがある。印字しないので引き継がない
+      const { expiresOn: _expiresOn, ...orig } = JSON.parse(src!.snapshot) as CardSnapshot & { expiresOn?: unknown };
       snapshot = { ...orig, ...toCardLook(orig, cardOptions(c.env)), ...override };
       card = (deps.buildCard ?? buildCardRaster)(snapshot, src!.issue_no, deps.resources);
     } catch (e) {
@@ -192,7 +192,7 @@ export function adminApi(deps: Deps) {
       throw new ApiError(500, "internal");
     }
     // 元の路線データ・日付・URL と発行番号（見た目だけ上で決めたもの）で、待ちの先頭（いまの先頭より小さい sort_key）に入れる。
-    // 路線が存在し、非公開でなく、期限内であることを同じ文の中で確かめる（確かめたあとの非公開化・削除と競合しない）
+    // 路線が存在し、非公開でないことを同じ文の中で確かめる（確かめたあとの非公開化・削除と競合しない）
     const row = await db
       .prepare(
         `INSERT INTO print_jobs (route_id, client_id, request_id, event_code, status, issue_no, sort_key, snapshot, raster, height, created_at, reprint_of)
@@ -201,7 +201,7 @@ export function adminApi(deps: Deps) {
            ?6, ?2, ?3, ?4, j.id
          FROM print_jobs j
          WHERE j.id = ?5 AND j.status IN ('done', 'failed')
-           AND EXISTS (SELECT 1 FROM routes r WHERE r.id = j.route_id AND r.hidden = 0 AND r.expires_at > ?4)
+           AND EXISTS (SELECT 1 FROM routes r WHERE r.id = j.route_id AND r.hidden = 0)
          RETURNING id, issue_no`,
       )
       .bind(`reprint-${newToken()}`, card.raster, card.height, nowIso, id, JSON.stringify(snapshot))
@@ -245,9 +245,9 @@ export function adminApi(deps: Deps) {
 
   app.get("/admin/routes", async (c) => {
     const { results } = await c.env.DB.prepare(
-      `SELECT id, json_extract(data, '$.name') AS name, created_at AS createdAt, expires_at AS expiresAt, hidden
+      `SELECT id, json_extract(data, '$.name') AS name, created_at AS createdAt, hidden
        FROM routes ORDER BY created_at DESC LIMIT 100`,
-    ).all<{ id: string; name: string; createdAt: string; expiresAt: string; hidden: number }>();
+    ).all<{ id: string; name: string; createdAt: string; hidden: number }>();
     return c.json({ routes: results.map((r) => ({ ...r, hidden: r.hidden === 1 })) });
   });
 

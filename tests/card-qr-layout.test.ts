@@ -36,17 +36,24 @@ const textRight = (input: CardInput, s: string) => {
 };
 
 describe("QR コードの段（長い URL）", () => {
-  it("ふつうの URL では QR の右に文字を置く", () => {
+  it("ふつうの URL では QR の右に文字を置き、QR の縦の中央にそろえる。期限は印字しない", () => {
     const url = "https://dot-rosen.example/r/AbCdEfGhIjKlMnOp";
-    const ops = inside({ ...base, url, expiresOn: "12月20日" });
+    const ops = inside({ ...base, url });
     const qr = ops.find((o) => o.k === "qr")!;
     const app = ops.find((o) => o.k === "text" && o.s === "ドット路線メーカー")!;
-    expect(qr.k === "qr" && app.k === "text" && app.x > qr.x + qr.m.size * qr.cell).toBe(true);
+    if (qr.k !== "qr" || app.k !== "text") throw new Error();
+    expect(app.x).toBeGreaterThan(qr.x + qr.m.size * qr.cell);
+    // 文字は 1 行（高さ 16）だけ。QR の上下の中央に置く（期限の文が無くなった分の空きを作らない）
+    const size = qr.m.size * qr.cell;
+    expect(app.y).toBe(qr.y + Math.floor((size - 16) / 2));
+    const texts = ops.filter((o) => o.k === "text" && o.y >= qr.y - 16);
+    expect(texts.map((o) => (o.k === "text" ? o.s : ""))).toEqual(["ドット路線メーカー"]);
+    expect(ops.some((o) => o.k === "text" && /見られます|まで/.test(o.s))).toBe(false);
   });
 
   it("長い URL で右に文字が入らないときは、QR の下に中央寄せで置き、どれも画像の外へ出ない", () => {
     const url = "https://dot-rosen.example/r/" + "x".repeat(300);
-    const input = { ...base, url, expiresOn: "12月20日" };
+    const input = { ...base, url };
     const ops = inside(input);
     const qr = ops.find((o) => o.k === "qr")!;
     if (qr.k !== "qr") throw new Error();
@@ -55,7 +62,7 @@ describe("QR コードの段（長い URL）", () => {
     const app = ops.find((o) => o.k === "text" && o.s === "ドット路線メーカー")!;
     if (app.k !== "text") throw new Error();
     expect(app.y).toBeGreaterThan(qr.y + qr.m.size * qr.cell);
-    expect(textRight(input, "12月20日まで見られます")).toBe(1);
+    expect(ops.some((o) => o.k === "text" && /見られます/.test(o.s))).toBe(false);
     // 描いても例外にならない
     expect(renderCardPrint(input).width).toBe(CARD_WIDTH);
     expect(renderCardColor(input).image.width).toBe(CARD_WIDTH);
@@ -63,7 +70,7 @@ describe("QR コードの段（長い URL）", () => {
 
   it("QR が幅 384 に入らないほど長い URL では QR を省き、文字だけ残す（例外にしない）", () => {
     const url = "https://dot-rosen.example/r/" + "y".repeat(1500);
-    const input = { ...base, url, expiresOn: "12月20日" };
+    const input = { ...base, url };
     const ops = inside(input);
     expect(ops.some((o) => o.k === "qr")).toBe(false);
     expect(textRight(input, "ドット路線メーカー")).toBe(1);
@@ -73,7 +80,7 @@ describe("QR コードの段（長い URL）", () => {
 
 describe("QR コードにできないほど長い URL", () => {
   it("QR を省くだけで、例外にしない", () => {
-    const input = { ...base, url: "https://dot-rosen.example/r/" + "z".repeat(4000), expiresOn: "12月20日" };
+    const input = { ...base, url: "https://dot-rosen.example/r/" + "z".repeat(4000) };
     expect(layoutCard(input).ops.some((o) => o.k === "qr")).toBe(false);
     expect(renderCardPrint(input).width).toBe(CARD_WIDTH);
   });

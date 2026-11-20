@@ -42,7 +42,7 @@ const REPRINT_INSERT = /reprint_of\)/;
 const count = async (sql: string, ...binds: unknown[]) => (await h.db.prepare(sql).bind(...binds).first<{ n: number }>())!.n;
 const counter = async () => Number((await h.db.prepare("SELECT value FROM settings WHERE key = 'issue_counter'").first<{ value: string }>())!.value);
 
-describe("1・2. 路線の確認のあとの非公開化・削除・期限切れと、追加の競合", () => {
+describe("1・2. 路線の確認のあとの非公開化・削除と、追加の競合", () => {
   it("確認のあと追加の直前に非公開になったら、追加せず 404。番号も消費しない", async () => {
     const r = await createRoute(h);
     h.beforeQuery(ENQUEUE, () => h.db.prepare("UPDATE routes SET hidden = 1 WHERE id = ?1").bind(r.id).run());
@@ -59,15 +59,7 @@ describe("1・2. 路線の確認のあとの非公開化・削除・期限切れ
     expect(await count("SELECT COUNT(*) AS n FROM print_jobs")).toBe(0);
   });
 
-  it("確認のあと追加の直前に期限が切れたら 410", async () => {
-    const r = await createRoute(h);
-    h.beforeQuery(ENQUEUE, () => h.db.prepare("UPDATE routes SET expires_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1").bind(r.id).run());
-    const res = await apply(h, r);
-    expect(res.status).toBe(410);
-    expect(await res.json()).toEqual({ error: "expired" });
-  });
-
-  it("再印刷: 期限切れの路線は 410。確かめたあと追加の直前に非公開になったら 409 で追加しない", async () => {
+  it("再印刷: 確かめたあと追加の直前に非公開になったら 409 で追加しない。作ってから何日たっても再印刷できる", async () => {
     const r = await createRoute(h);
     const { jobId } = await json<PrintRes>(await apply(h, r));
     const c = await claimAndRead(h);
@@ -79,15 +71,11 @@ describe("1・2. 路線の確認のあとの非公開化・削除・期限切れ
     expect(await count("SELECT COUNT(*) AS n FROM print_jobs WHERE reprint_of IS NOT NULL")).toBe(0);
 
     await h.db.prepare("UPDATE routes SET hidden = 0 WHERE id = ?1").bind(r.id).run();
-    h.beforeQuery(REPRINT_INSERT, () => h.db.prepare("UPDATE routes SET expires_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1").bind(r.id).run());
-    expect((await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`)).status).toBe(410);
-
-    // 最初から期限切れ
-    h.clock.advance(31 * 24 * 3600_000);
+    h.clock.advance(400 * 24 * 3600_000);
     const cookie2 = await adminCookie(h);
     const res = await admin(h, cookie2, "POST", `/api/admin/jobs/${jobId}/reprint`);
-    expect(res.status).toBe(410);
-    expect(await count("SELECT COUNT(*) AS n FROM print_jobs WHERE reprint_of IS NOT NULL")).toBe(0);
+    expect(res.status).toBe(200);
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs WHERE reprint_of IS NOT NULL")).toBe(1);
   });
 });
 
@@ -109,11 +97,9 @@ describe("3. 同じ (clientId, requestId) の再送", () => {
     expect((await apply(h, other, { clientId, requestId })).status).toBe(409);
   });
 
-  it("路線が非公開・期限切れでも、鍵が合えば元の印刷の状態を返す。削除されたら 404", async () => {
+  it("路線が非公開でも、鍵が合えば元の印刷の状態を返す。削除されたら 404", async () => {
     const { r, clientId, requestId, a } = await first();
     await h.db.prepare("UPDATE routes SET hidden = 1 WHERE id = ?1").bind(r.id).run();
-    expect(await json(await apply(h, r, { clientId, requestId }))).toEqual(a);
-    await h.db.prepare("UPDATE routes SET hidden = 0, expires_at = '2026-01-01T00:00:00.000Z' WHERE id = ?1").bind(r.id).run();
     expect(await json(await apply(h, r, { clientId, requestId }))).toEqual(a);
     await h.db.prepare("DELETE FROM routes WHERE id = ?1").bind(r.id).run();
     expect((await apply(h, r, { clientId, requestId })).status).toBe(404);
@@ -289,84 +275,66 @@ describe("6. 日次の掃除", () => {
   });
 });
 
-describe("6b. 期限切れの掃除と、待ち・印刷中の印刷", () => {
-  const CLAIM_UPDATE = /UPDATE print_jobs SET status = 'printing'/;
-  const ROWS_SELECT = /substr\(raster/;
-  const expire = (id: string) => h.db.prepare("UPDATE routes SET expires_at = ?2 WHERE id = ?1").bind(id, h.clock.now().toISOString()).run();
+describe("6b. 期限は無い: 掃除は路線を消さず、古い記録の期限の日付は印字しない", () => {
+  const DAY = 24 * 3600_000;
   const jobs = async () => (await h.db.prepare("SELECT id, status FROM print_jobs ORDER BY id").all<{ id: number; status: string }>()).results;
 
-  it("待ち（queued）の印刷が残っている期限切れの路線は消さず、印刷は最後まで刷れる。終われば次の掃除で消える", async () => {
+  it("待ちの印刷がある路線も無い路線も、何日たっても掃除で消えない。待ちの印刷は最後まで刷れる", async () => {
     const r = await createRoute(h);
+    const other = await createRoute(h);
     const { jobId } = await json<PrintRes>(await apply(h, r));
-    await expire(r.id);
-    h.clock.advance(1000);
-    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 0, jobs: 0 });
-    // 公開 API は期限切れのまま
-    expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(410);
+    h.clock.advance(400 * DAY);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ jobs: 0 });
+    expect((await h.call("GET", `/api/routes/${r.id}`)).status).toBe(200);
+    expect((await h.call("GET", `/api/routes/${other.id}`)).status).toBe(200);
     const c = await claimAndRead(h);
     expect(c!.jobId).toBe(jobId);
     expect((await printer(h, "POST", `/api/printer/jobs/${jobId}/done`, { ok: true })).status).toBe(200);
-    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 1, jobs: 1 });
+    // 終わってから 30 日たった印刷記録は消えるが、路線は残る
+    h.clock.advance(31 * DAY);
+    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ jobs: 1 });
     expect(await jobs()).toEqual([]);
+    expect(await count("SELECT COUNT(*) AS n FROM routes")).toBe(2);
   });
 
-  it("印刷中（printing）の印刷は、claim と rows の間に掃除が走っても rows が 404 にならない", async () => {
+  it("再印刷を確かめたあと追加の直前に掃除が走っても、路線は消えず再印刷は入る", async () => {
     const r = await createRoute(h);
-    const { jobId } = await json<PrintRes>(await apply(h, r));
-    expect((await printer(h, "POST", "/api/printer/claim")).status).toBe(200);
-    await expire(r.id);
-    h.clock.advance(1000);
-    h.beforeQuery(ROWS_SELECT, () => cleanup(h.db, h.clock.now()));
-    const rows = await printer(h, "GET", `/api/printer/jobs/${jobId}/rows?offset=0&count=1`);
-    expect(rows.status).toBe(200);
-    expect((await printer(h, "POST", `/api/printer/jobs/${jobId}/done`, { ok: true })).status).toBe(200);
-    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 1, jobs: 1 });
-  });
-
-  it("claim の直前に掃除が走っても、期限切れの路線の待ちの印刷を渡す", async () => {
-    const r = await createRoute(h);
-    const { jobId } = await json<PrintRes>(await apply(h, r));
-    await expire(r.id);
-    h.clock.advance(1000);
-    h.beforeQuery(CLAIM_UPDATE, () => cleanup(h.db, h.clock.now()));
-    const res = await printer(h, "POST", "/api/printer/claim");
-    expect(res.status).toBe(200);
-    expect((await json<{ jobId: number }>(res)).jobId).toBe(jobId);
-  });
-
-  it("期限の直前に入った再印刷は、期限後の掃除で消えない", async () => {
-    const r = await createRoute(h);
+    h.clock.advance(20 * DAY);
     const { jobId } = await json<PrintRes>(await apply(h, r));
     const c = await claimAndRead(h);
     await printer(h, "POST", `/api/printer/jobs/${c!.jobId}/done`, { ok: true });
     const cookie = await adminCookie(h);
+    // 路線の作成から 31 日後（以前の期限の後）の掃除。元の印刷は終わってから 11 日なので残る
+    h.beforeQuery(REPRINT_INSERT, () => cleanup(h.db, new Date(h.clock.now().getTime() + 11 * DAY)));
     const re = await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`);
     expect(re.status).toBe(200);
-    const reId = (await json<{ jobId: number }>(re)).jobId;
-    await expire(r.id);
-    h.clock.advance(1000);
-    expect(await cleanup(h.db, h.clock.now())).toMatchObject({ routes: 0, jobs: 0 });
-    expect(await jobs()).toEqual([
-      { id: jobId, status: "done" },
-      { id: reId, status: "queued" },
-    ]);
-    const c2 = await claimAndRead(h);
-    expect(c2!.jobId).toBe(reId);
+    expect(await count("SELECT COUNT(*) AS n FROM routes")).toBe(1);
+    expect(await count("SELECT COUNT(*) AS n FROM print_jobs WHERE reprint_of = ?1", jobId)).toBe(1);
   });
 
-  it("再印刷を確かめたあと追加の直前に期限後の掃除が走ったら、追加しない（路線の無い印刷を作らない）", async () => {
+  it("期限の日付（expiresOn）が残った古い snapshot でも、管理画面の一覧・再印刷が落ちず、期限は印字しない", async () => {
     const r = await createRoute(h);
     const { jobId } = await json<PrintRes>(await apply(h, r));
     const c = await claimAndRead(h);
     await printer(h, "POST", `/api/printer/jobs/${c!.jobId}/done`, { ok: true });
     const cookie = await adminCookie(h);
-    // 掃除は路線の期限を過ぎた時刻で走る
-    const expiresAt = (await h.db.prepare("SELECT expires_at FROM routes WHERE id = ?1").bind(r.id).first<{ expires_at: string }>())!.expires_at;
-    h.beforeQuery(REPRINT_INSERT, () => cleanup(h.db, new Date(Date.parse(expiresAt) + 1000)));
+    // 期限の無い記録からの再印刷
+    const plain = await json<{ jobId: number }>(await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`));
+    // 期限を廃止する前の記録の形にする
+    await h.db.prepare("UPDATE print_jobs SET snapshot = json_set(snapshot, '$.expiresOn', '12月20日') WHERE id = ?1").bind(jobId).run();
+    const state = await admin(h, cookie, "GET", "/api/admin/state");
+    expect(state.status).toBe(200);
     const re = await admin(h, cookie, "POST", `/api/admin/jobs/${jobId}/reprint`);
-    expect(re.status).toBe(404);
-    expect(await count("SELECT COUNT(*) AS n FROM print_jobs")).toBe(0);
-    expect(await count("SELECT COUNT(*) AS n FROM routes")).toBe(0);
+    expect(re.status).toBe(200);
+    const old = await json<{ jobId: number }>(re);
+    const row = (id: number) =>
+      h.db.prepare("SELECT snapshot, raster, height FROM print_jobs WHERE id = ?1").bind(id).first<{ snapshot: string; raster: ArrayBuffer; height: number }>();
+    const a = (await row(plain.jobId))!;
+    const b = (await row(old.jobId))!;
+    // 新しい印刷の snapshot に期限の日付を引き継がず、路線カードも期限の無い記録と同じ
+    expect(JSON.parse(b.snapshot)).not.toHaveProperty("expiresOn");
+    expect(b.height).toBe(a.height);
+    expect(new Uint8Array(b.raster)).toEqual(new Uint8Array(a.raster));
   });
 });
 

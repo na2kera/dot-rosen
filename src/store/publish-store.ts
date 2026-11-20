@@ -16,7 +16,6 @@ import { safeGet, safeRemove, safeSet, STORAGE_KEYS, type KeyValueStorage } from
 export type SavedRecord = {
   readonly editKey: string;
   readonly id: string | null;
-  readonly expiresAt: string | null;
   /** savedRev の内容（正規化した RouteData の JSON）。変更があるかの判定に使う */
   readonly savedJson: string | null;
   /** サーバーが保存の応答で返した版の印。null は結果不明（送っている途中・応答を受け取りそこねた・古い記録） */
@@ -125,8 +124,8 @@ export function readSaved(storage: KeyValueStorage): SavedRecord | null {
   const opt = (v: unknown) => (isStr(v) ? v : null);
   return {
     editKey: r.editKey,
+    // 期限を廃止する前の記録に残っている expiresAt は読み捨てる
     id: opt(r.id),
-    expiresAt: opt(r.expiresAt),
     savedJson: opt(r.savedJson),
     // rev の無い古い記録は結果不明（次の保存で送り直して rev を得る）
     savedRev: isRev(r.savedRev) ? r.savedRev : null,
@@ -170,14 +169,14 @@ export type PublishDeps = {
   isHidden?: () => boolean;
   /** 今のサーバーの設定の見た目（申し込んだときの見た目として覚える）。無ければ記録しない */
   cardLook?: () => CardLook;
-  /** 今の時刻（期限切れの判定、申し込んだ日） */
+  /** 今の時刻（申し込んだ日） */
   now?: () => Date;
   /** ほかのタブで保存先が変わったときに呼ばれる口 */
   subscribeExternal?: (cb: (key: string | null) => void) => () => void;
 };
 
 /** 保存の状態（画面の出し分け用） */
-export type SaveStatus = "none" | "clean" | "dirty" | "expired";
+export type SaveStatus = "none" | "clean" | "dirty";
 
 export type PublishStore = ReturnType<typeof createPublishStore>;
 
@@ -229,35 +228,33 @@ export function createPublishStore(deps: PublishDeps) {
     if (fresh && !sameSaved(fresh, store.get().saved)) patch({ saved: fresh });
   }
 
-  const isExpired = (rec: SavedRecord | null) => !!rec?.expiresAt && Date.parse(rec.expiresAt) <= now().getTime();
-
   // ---- 保存 ----
 
   let saving: Promise<boolean> | null = null;
 
-  /** 鍵の路線がもう使えない（消された・期限切れ・非公開・鍵違い） */
-  const isGone = (f: ApiFailure) => f.code === "not_found" || f.code === "expired" || f.code === "forbidden";
+  /** 鍵の路線がもう使えない（消された・非公開・鍵違い） */
+  const isGone = (f: ApiFailure) => f.code === "not_found" || f.code === "forbidden";
 
   /**
    * 保存の成功の応答を反映する。端末の記録が、自分が送る前に書いた結果不明の状態（目印 token）のままのときだけ確定する。
    * ほかのタブが書き換えていたら、古い応答で上書きせず、結果不明にする（次の保存で送り直す）
    */
-  function settleSave(token: string, editKey: string, id: string, expiresAt: string, rev: unknown, json: string): boolean {
+  function settleSave(token: string, editKey: string, id: string, rev: unknown, json: string): boolean {
     const fresh = readSaved(storage);
     if (fresh && fresh.pending === token && fresh.editKey === editKey) {
       if (isRev(rev)) {
         // 鍵はもう端末にあるので、ここで書けなくても同じ鍵で送り直せば同じ路線に戻れる
-        writeSaved({ editKey, id, expiresAt, savedJson: json, savedRev: rev, pending: null });
+        writeSaved({ editKey, id, savedJson: json, savedRev: rev, pending: null });
         return true;
       }
       // 版の印が無い・形が違う応答は、画面で補わずに結果不明のままにする
-      writeSaved({ editKey, id, expiresAt, savedJson: null, savedRev: null, pending: null });
+      writeSaved({ editKey, id, savedJson: null, savedRev: null, pending: null });
       patch({ saveError: { ok: false, code: "internal", status: 0 } });
       return false;
     }
     if (fresh && fresh.editKey === editKey && (fresh.id === null || fresh.id === id)) {
       // 同じ路線をほかのタブが書いた（どちらの内容がサーバーに残ったか分からない）
-      if (fresh.savedRev !== null || fresh.id === null) writeSaved({ ...fresh, id, expiresAt: fresh.expiresAt ?? expiresAt, savedJson: null, savedRev: null });
+      if (fresh.savedRev !== null || fresh.id === null) writeSaved({ ...fresh, id, savedJson: null, savedRev: null });
       else patch({ saved: fresh });
     } else {
       // ほかのタブが消した・別の路線にした → その記録に従う
@@ -272,7 +269,7 @@ export function createPublishStore(deps: PublishDeps) {
     // 書けなかったら送らない（あとで編集も削除もできない URL ができてしまうため）
     const before = store.get().saved;
     let rec = before;
-    if (!rec || rec.id !== null) rec = { editKey: randomToken(random), id: null, expiresAt: null, savedJson: null, savedRev: null, pending: null };
+    if (!rec || rec.id !== null) rec = { editKey: randomToken(random), id: null, savedJson: null, savedRev: null, pending: null };
     const token = randomToken(random);
     if (!writeSaved({ ...rec, pending: token })) {
       writeSaved(before);
@@ -280,7 +277,7 @@ export function createPublishStore(deps: PublishDeps) {
       return false;
     }
     const r = await api.createRoute(data, rec.editKey);
-    if (r.ok) return settleSave(token, rec.editKey, r.value.id, r.value.expiresAt, r.value.rev, json);
+    if (r.ok) return settleSave(token, rec.editKey, r.value.id, r.value.rev, json);
     patch({ saveError: r });
     return false;
   }
@@ -294,7 +291,7 @@ export function createPublishStore(deps: PublishDeps) {
       return false;
     }
     const r = await api.updateRoute(rec.id, data, rec.editKey);
-    if (r.ok) return settleSave(token, rec.editKey, rec.id, r.value.expiresAt, r.value.rev, json);
+    if (r.ok) return settleSave(token, rec.editKey, rec.id, r.value.rev, json);
     if (isGone(r)) return "gone";
     const fresh = readSaved(storage);
     if (fresh?.pending === token) {
@@ -311,11 +308,6 @@ export function createPublishStore(deps: PublishDeps) {
     try {
       refreshSaved();
       const rec = store.get().saved;
-      if (rec && rec.id !== null && isExpired(rec)) {
-        // 期限切れ: 同じ URL には保存できないので、新しい鍵で作り直す
-        writeSaved(null);
-        return await post(data, json);
-      }
       if (rec && rec.id !== null) {
         if (rec.savedRev !== null && rec.savedJson === json) return true;
         const r = await put({ ...rec, id: rec.id }, data, json);
@@ -338,16 +330,15 @@ export function createPublishStore(deps: PublishDeps) {
     }
   }
 
-  /** 保存してあり（結果不明でなく）、期限内で、内容が変わっていないか */
+  /** 保存してあり（結果不明でなく）、内容が変わっていないか */
   function isSaved(data: RouteData | null): boolean {
     const rec = store.get().saved;
-    return !!rec && rec.id !== null && !isExpired(rec) && rec.savedRev !== null && data !== null && rec.savedJson === routeJson(data);
+    return !!rec && rec.id !== null && rec.savedRev !== null && data !== null && rec.savedJson === routeJson(data);
   }
 
   function saveStatus(data: RouteData | null): SaveStatus {
     const rec = store.get().saved;
     if (!rec || rec.id === null) return "none";
-    if (isExpired(rec)) return "expired";
     // 結果不明は「変更あり」（保存しなおすと送り直す）
     return isSaved(data) ? "clean" : "dirty";
   }
@@ -490,11 +481,6 @@ export function createPublishStore(deps: PublishDeps) {
     if (r.code !== "network" && r.code !== "internal" && r.code !== "conflict") {
       // はっきり断られた → 申し込みは無かったことにし、前の記録（印刷ずみ など）に戻す
       writePrint(rec.prev);
-      if (r.code === "expired") {
-        // 保存した路線の期限が切れていた → 保存ずみ扱いをやめ、次は新しい URL で保存する
-        const saved = store.get().saved;
-        if (saved && saved.id === rec.routeId) writeSaved({ ...saved, expiresAt: now().toISOString() });
-      }
     }
     patch({ printError: r });
     return false;
@@ -638,8 +624,8 @@ export function createPublishStore(deps: PublishDeps) {
     const rec = store.get().saved;
     if (!rec || rec.id !== id) return { ok: false, code: "forbidden", status: 0 };
     const r = await api.deleteRoute(id, rec.editKey);
-    // すでに無い・期限切れなら、端末の情報だけ消す
-    if (r.ok || r.code === "not_found" || r.code === "expired") {
+    // すでに無いなら、端末の情報だけ消す
+    if (r.ok || r.code === "not_found") {
       forget();
       return { ok: true };
     }
@@ -651,12 +637,12 @@ export function createPublishStore(deps: PublishDeps) {
    * 読んだときの版の印（rev）が端末の保存記録の印と同じときだけ保存ずみとして引き継ぎ、
    * 違う・分からないときは結果不明にする（保存しなおすと送り直す。印刷の食い違いは stale で拾う）
    */
-  function markSaved(id: string, data: RouteData, expiresAt: string, rev: string | null): boolean {
+  function markSaved(id: string, data: RouteData, rev: string | null): boolean {
     refreshSaved();
     const rec = store.get().saved;
     if (!rec || rec.id !== id) return false;
-    if (isRev(rev) && rec.savedRev === rev) return writeSaved({ ...rec, expiresAt, savedJson: routeJson(data) });
-    return writeSaved({ ...rec, expiresAt, savedJson: null, savedRev: null });
+    if (isRev(rev) && rec.savedRev === rev) return writeSaved({ ...rec, savedJson: routeJson(data) });
+    return writeSaved({ ...rec, savedJson: null, savedRev: null });
   }
 
   /** この端末がその路線の鍵を持っているか */

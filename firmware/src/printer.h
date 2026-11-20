@@ -31,9 +31,16 @@ int queryDleEot(uint8_t n);  // 10 04 n
 int queryGsR1();             // 1D 72 01
 
 // 高さ height 行の画像を、帯（最大 bandRows 行）ごとに reader から読んで印刷する。
-// 帯の途中で失敗したら false。err に理由。プリンタは初期化し直す。
+// 失敗したら false。err に理由。
+// ヘッダを送る前の失敗（取得の失敗など）ならプリンタを初期化し直す。
+// 帯の途中（ヘッダ送信後、データを送り切る前）で打ち切ったときは err = "uart_stall" とし、
+// プリンタには何も送らない（lastFailure() == MidBand）。
 bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx,
                  String& err);
+// 最後の printStream の失敗のしかた
+rosen::PrintFail lastFailure();
+// 最後の printStream のあとに紙送りしてよければ紙を送って true（帯の途中で止まったときは送らず false）
+bool feedIfSafe();
 // 今の（または最後の）印刷で送り終えた行数
 uint32_t rowsSent();
 // 最後の印刷中に G19 が busy（PRINTER_CTS_BUSY_LEVEL）になった回数と累積時間（ms）。

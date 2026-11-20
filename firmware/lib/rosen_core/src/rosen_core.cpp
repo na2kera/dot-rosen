@@ -570,7 +570,25 @@ BodyReader::State BodyReader::feed(uint8_t c) {
 DoneOutcome classifyDoneCode(int httpCode) {
   if (httpCode == 200) return DoneOutcome::Accepted;
   if (httpCode == 409) return DoneOutcome::Conflict;
+  if (httpCode == 404) return DoneOutcome::Gone;
   return DoneOutcome::Retry;
+}
+
+ReadStop readStopCheck(uint32_t now, uint32_t lastRx, uint32_t idleMs, const Deadline& d) {
+  if (d.expired(now)) return ReadStop::Total;
+  if (now - lastRx > idleMs) return ReadStop::Idle;
+  return ReadStop::Continue;
+}
+
+const char kErrUartStall[] = "uart_stall";
+
+AfterPrint planAfterPrint(PrintFail f) {
+  switch (f) {
+    case PrintFail::None: return AfterPrint{false, true, false};
+    case PrintFail::Clean: return AfterPrint{true, true, false};
+    case PrintFail::MidBand: return AfterPrint{false, false, true};
+  }
+  return AfterPrint{false, false, true};
 }
 
 bool rowsRetryable(int httpCode) {
@@ -583,23 +601,27 @@ void PendingDone::set(uint32_t job, bool okResult, const char* err, uint32_t now
   ok = okResult;
   sanitizeErrorCode(okResult ? "" : (err && *err ? err : "unknown"), error, sizeof(error), 64);
   attempts = 0;
-  nextAt = now;
+  lastAt = now;
+  waitMs = 0;
 }
 
 bool PendingDone::due(uint32_t now) const {
-  return active && static_cast<int32_t>(now - nextAt) >= 0;
+  // 経過を符号なしの差で測る（予定時刻との符号つき比較は差が 2^31 ms を超えると逆転する）
+  return active && (now - lastAt) >= waitMs;
 }
 
 void PendingDone::retryLater(uint32_t now, uint32_t interval) {
   ++attempts;
-  nextAt = now + interval;
+  lastAt = now;
+  waitMs = interval;
 }
 
-uint32_t pollInterval(uint32_t now, uint32_t lastActivity, bool pendingDone, uint32_t fastMs,
-                      uint32_t slowMs, uint32_t idleAfterMs) {
+uint32_t PollIdle::interval(uint32_t now, bool pendingDone, uint32_t fastMs, uint32_t slowMs,
+                            uint32_t idleAfterMs) {
+  // 差を符号なしで取るので millis() の桁あふれをまたいでも正しい。一度 idle になったら保持する
+  if (!idle && (now - lastActivity) >= idleAfterMs) idle = true;
   if (pendingDone) return fastMs;
-  // 差を符号なしで取るので millis() の桁あふれをまたいでも正しい
-  return (now - lastActivity) >= idleAfterMs ? slowMs : fastMs;
+  return idle ? slowMs : fastMs;
 }
 
 void BusyStats::sample(bool busy, uint32_t now) {

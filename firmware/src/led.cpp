@@ -6,6 +6,7 @@ namespace led {
 
 static State state = State::Booting;
 static uint32_t failUntil = 0;
+static bool fault = false;
 static uint32_t lastColor = 0xFFFFFFFF;
 
 static void write(uint8_t r, uint8_t g, uint8_t b) {
@@ -37,8 +38,17 @@ void showFailure() {
   tick();
 }
 
+void setFault(bool on) {
+  fault = on;
+  tick();
+}
+
 void tick() {
   const uint32_t now = millis();
+  if (fault) {
+    write(LED_BRIGHTNESS, 0, 0);
+    return;
+  }
   if (failUntil != 0) {
     if (static_cast<int32_t>(failUntil - now) > 0) {
       write(LED_BRIGHTNESS, 0, 0);

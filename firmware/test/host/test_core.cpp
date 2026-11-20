@@ -295,19 +295,106 @@ static void testDoneAndRetry() {
 
 static void testPollInterval() {
   const uint32_t F = 3000, S = 10000, IDLE = 120000;
-  // 起動直後（lastActivity = 起動時刻）
-  CHECK(pollInterval(0, 0, false, F, S, IDLE) == F);
-  CHECK(pollInterval(119999, 0, false, F, S, IDLE) == F);
-  CHECK(pollInterval(120000, 0, false, F, S, IDLE) == S);  // ちょうど 2 分で延ばす
-  CHECK(pollInterval(500000, 0, false, F, S, IDLE) == S);
-  // 印刷を受け取った・ボタンを押した → 短い方に戻る
-  CHECK(pollInterval(500000, 499000, false, F, S, IDLE) == F);
-  CHECK(pollInterval(500000 + IDLE, 500000, false, F, S, IDLE) == S);
+  PollIdle p;
+  // 起動直後（起動時刻を活動とする）
+  p.activity(0);
+  CHECK(p.interval(0, false, F, S, IDLE) == F);
+  CHECK(p.interval(119999, false, F, S, IDLE) == F);
+  CHECK(p.interval(120000, false, F, S, IDLE) == S);  // ちょうど 2 分で延ばす
+  CHECK(p.interval(500000, false, F, S, IDLE) == S);
   // 未送信の完了報告があれば常に短い方
-  CHECK(pollInterval(500000, 0, true, F, S, IDLE) == F);
+  CHECK(p.interval(500000, true, F, S, IDLE) == F);
+  // 印刷を受け取った・ボタンを押した → 短い方に戻る
+  p.activity(499000);
+  CHECK(p.interval(500000, false, F, S, IDLE) == F);
+  CHECK(p.interval(499000 + IDLE, false, F, S, IDLE) == S);
+}
+
+// ---- 再レビューの指摘 F1 / F4（直す前の実装では落ちた）----
+static void testLongOutage() {
+  // F1: done の 404 は送り直さない
+  CHECK(classifyDoneCode(404) != DoneOutcome::Retry);
+  // F4: 約 25 日以上たっても送り直しが止まらない
+  PendingDone q;
+  q.set(1, true, "", 1000);
+  q.retryLater(1000, 3000);
+  CHECK(q.due(1000 + 0x80000000u + 5000));
+  CHECK(q.due(1000 + 0xC0000000u));
+}
+
+// F1: done の 404 は「報告先が無い」終端結果。401 などは従来どおり送り直す
+static void testDoneGone() {
+  CHECK(classifyDoneCode(404) == DoneOutcome::Gone);
+  CHECK(classifyDoneCode(401) == DoneOutcome::Retry);
+  CHECK(classifyDoneCode(400) == DoneOutcome::Retry);
+  CHECK(classifyDoneCode(410) == DoneOutcome::Retry);
+}
+
+// F2: 帯の取得の締切（無通信の待ちとは別に、総経過時間で打ち切る）
+static void testDeadline() {
+  Deadline d{1000, 90000};
+  CHECK(!d.expired(1000) && !d.expired(90999) && d.expired(91000));
+  CHECK(d.remaining(1000) == 90000 && d.remaining(61000) == 30000 && d.remaining(91000) == 0);
+  CHECK(d.remaining(500000) == 0);
   // millis() の桁あふれをまたぐ
-  CHECK(pollInterval(0x00000100u, 0xFFFFFF00u, false, F, S, IDLE) == F);
-  CHECK(pollInterval(0x00020000u, 0xFFFFFF00u, false, F, S, IDLE) == S);  // 約 131 秒後
+  Deadline w{0xFFFFF000u, 90000};
+  CHECK(!w.expired(0xFFFFFFFFu) && !w.expired(0x00001000u));
+  CHECK(w.expired(0xFFFFF000u + 90000u) && w.remaining(0xFFFFF000u + 89000u) == 1000);
+
+  const uint32_t IDLE = 15000;
+  // 1 秒に 1 バイトずつ届く: 無通信の待ちには掛からないが、90 秒で打ち切る
+  uint32_t lastRx = 1000;
+  ReadStop stop = ReadStop::Continue;
+  uint32_t stoppedAt = 0;
+  for (uint32_t now = 1000; now < 1000 + 5000000; now += 100) {
+    if ((now - 1000) % 1000 == 0) lastRx = now;  // 受信
+    stop = readStopCheck(now, lastRx, IDLE, d);
+    if (stop != ReadStop::Continue) { stoppedAt = now; break; }
+  }
+  CHECK(stop == ReadStop::Total && stoppedAt == 91000);
+  // 無通信なら 15 秒で打ち切る（締切より先）
+  CHECK(readStopCheck(16000, 1000, IDLE, d) == ReadStop::Continue);
+  CHECK(readStopCheck(16001, 1000, IDLE, d) == ReadStop::Idle);
+  // 締切と無通信が同時なら締切を優先
+  CHECK(readStopCheck(91000, 1000, IDLE, d) == ReadStop::Total);
+}
+
+// F3: 帯の途中で送信を打ち切ったあとの扱い
+static void testAfterPrint() {
+  AfterPrint a = planAfterPrint(PrintFail::None);
+  CHECK(!a.resetPrinter && a.feedPaper && !a.stopAutoClaim);
+  a = planAfterPrint(PrintFail::Clean);  // ヘッダを送る前の失敗（取得の失敗など）
+  CHECK(a.resetPrinter && a.feedPaper && !a.stopAutoClaim);
+  a = planAfterPrint(PrintFail::MidBand);  // ヘッダ送信後、データを送り切る前
+  CHECK(!a.resetPrinter && !a.feedPaper && a.stopAutoClaim);
+  CHECK(strcmp(kErrUartStall, "uart_stall") == 0);
+}
+
+// F5: 2 分たったら idle を保持し、印刷の受信・ボタン操作でだけ解除する
+static void testPollIdle() {
+  const uint32_t F = 3000, S = 10000, IDLE = 120000;
+  PollIdle p;
+  p.activity(0);
+  CHECK(p.interval(119999, false, F, S, IDLE) == F);
+  CHECK(p.interval(120000, false, F, S, IDLE) == S);
+  // 約 49.7 日たって now が 1 周しても 10 秒のまま（途中も毎周期見ている）
+  bool allSlow = true;
+  for (uint64_t t = 120000; t <= 0x100000000ull + 200000; t += 3600000)
+    allSlow &= p.interval(static_cast<uint32_t>(t), false, F, S, IDLE) == S;
+  CHECK(allSlow);
+  CHECK(p.interval(1000, false, F, S, IDLE) == S);  // 1 周して 1000 に戻った
+  // 未送信の完了報告があれば常に短い方（idle は保持したまま）
+  CHECK(p.interval(2000, true, F, S, IDLE) == F);
+  CHECK(p.interval(2001, false, F, S, IDLE) == S);
+  // 印刷の受信・ボタン操作で解除
+  p.activity(5000);
+  CHECK(p.interval(5001, false, F, S, IDLE) == F);
+  CHECK(p.interval(5000 + IDLE - 1, false, F, S, IDLE) == F);
+  CHECK(p.interval(5000 + IDLE, false, F, S, IDLE) == S);
+  // 桁あふれの直前に活動があった場合
+  p.activity(0xFFFFFF00u);
+  CHECK(p.interval(0x00000100u, false, F, S, IDLE) == F);
+  CHECK(p.interval(0x00020000u, false, F, S, IDLE) == S);  // 約 131 秒後
 }
 
 static void testBusyStats() {
@@ -375,6 +462,11 @@ int main(int argc, char** argv) {
   testDoneAndRetry();
   testBusyStats();
   testPollInterval();
+  testLongOutage();
+  testDoneGone();
+  testDeadline();
+  testAfterPrint();
+  testPollIdle();
   testClaimCommand();
   testStrings();
   if (argc > 1) {

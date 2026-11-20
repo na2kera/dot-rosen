@@ -136,17 +136,25 @@ static bool waitClear(String& err) {
   return true;
 }
 
-static bool sendBand(const uint8_t* data, uint16_t rows, String& err) {
+// 最後の印刷の失敗のしかた
+static PrintFail lastFailKind = PrintFail::None;
+
+// 失敗したら false。ヘッダを送ったあとデータを送り切る前に打ち切ったら midBand = true。
+static bool sendBand(const uint8_t* data, uint16_t rows, String& err, bool& midBand) {
+  midBand = false;
   uint8_t header[kRasterHeaderSize];
   buildRasterHeader(header, kRowBytes, rows, 0);
-  if (!waitClear(err)) return false;
+  if (!waitClear(err)) return false;  // ヘッダの前: プリンタはデータ待ちになっていない
   uart.write(header, sizeof(header));
   const size_t total = static_cast<size_t>(rows) * kRowBytes;
   for (size_t off = 0; off < total; off += PRINTER_CHUNK_BYTES) {
     if (!waitClear(err)) {
-      // 受信できないまま残りを無理に送ることはしない。帯の途中で打ち切り、
-      // 呼び出し元でプリンタを初期化し直す。プリンタは GS v 0 の残りのデータを待っている
-      // 可能性があり、初期化命令がデータとして読まれるかもしれない（実機で未確認）。
+      // 受信できないまま残りを無理に送ることはしない。帯の途中で打ち切る。
+      // プリンタは GS v 0 の残りのデータを待っている可能性があり、このあとに送る命令
+      // （ESC @・紙送り・次の印刷）は画像のデータとして読まれるかもしれない（実機で未確認）。
+      // そのため呼び出し元では何も送らず、自動の受け取りを止める（planAfterPrint）。
+      err = kErrUartStall;
+      midBand = true;
       return false;
     }
     const size_t n = min(static_cast<size_t>(PRINTER_CHUNK_BYTES), total - off);
@@ -182,28 +190,40 @@ bool printStream(uint32_t height, uint16_t bandRows, RowReader reader, void* ctx
   if (bandRows == 0 || bandRows > FETCH_ROWS) bandRows = FETCH_ROWS;
   ctsStats.reset();
   rowsSentCount = 0;
+  lastFailKind = PrintFail::None;
   init();
   uint32_t offset = 0;
-  bool ok = true;
   while (offset < height) {
     const uint16_t rows = nextBandRows(height - offset, bandRows);
     // 帯を全部受け取ってからヘッダを送る。受け取りに失敗しても、
     // プリンタが GS v 0 のデータ待ちのまま残ることはない。
     if (!reader(ctx, offset, rows, bandBuf, err)) {
       if (err.length() == 0) err = "read_failed";
-      ok = false;
+      lastFailKind = PrintFail::Clean;
       break;
     }
-    if (!sendBand(bandBuf, rows, err)) {
-      ok = false;
+    bool midBand = false;
+    if (!sendBand(bandBuf, rows, err, midBand)) {
+      lastFailKind = midBand ? PrintFail::MidBand : PrintFail::Clean;
       break;
     }
     offset += rows;
     rowsSentCount = offset;
   }
   ctsStats.finish(millis());
-  if (!ok) init();
-  return ok;
+  if (lastFailKind == PrintFail::MidBand)
+    Serial.printf("[error] %s: 帯の途中で送信を打ち切った（rows_sent=%lu）。ESC @ と紙送りは送らない\n",
+                  kErrUartStall, static_cast<unsigned long>(rowsSentCount));
+  if (planAfterPrint(lastFailKind).resetPrinter) init();
+  return lastFailKind == PrintFail::None;
+}
+
+PrintFail lastFailure() { return lastFailKind; }
+
+bool feedIfSafe() {
+  if (!planAfterPrint(lastFailKind).feedPaper) return false;
+  feed();
+  return true;
 }
 
 uint32_t rowsSent() { return rowsSentCount; }
@@ -227,7 +247,7 @@ static bool patternReader(void* ctx, uint32_t offset, uint16_t rows, uint8_t* bu
 bool printPattern(Pattern p, String& err) {
   Pattern pp = p;
   bool ok = printStream(patternHeight(p), FETCH_ROWS, patternReader, &pp, err);
-  if (ok) feed();
+  if (ok) feed();  // 失敗時は紙を送らない（従来どおり）
   return ok;
 }
 

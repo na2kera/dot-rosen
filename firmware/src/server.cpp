@@ -82,7 +82,18 @@ bool ensureTime() {
 
 bool timeSynced() { return timeOk; }
 
-void setAutoClaim(bool on) { autoClaimOn = on; }
+void setAutoClaim(bool on) {
+  autoClaimOn = on;
+  if (on) led::setFault(false);
+}
+
+void haltAfterStall(const String& where) {
+  autoClaimOn = false;
+  led::setFault(true);
+  app::setLastError(where + "_" + kErrUartStall + "_claim_off");
+  Serial.println("[error] 帯の途中で止まったので自動の受け取りを止めた（CLAIM OFF）。"
+                 "プリンタの電源を入れ直してからテスト印刷で確かめ、CLAIM ON で再開する");
+}
 bool autoClaim() { return autoClaimOn; }
 
 Health health() { return currentHealth; }
@@ -166,7 +177,12 @@ struct JobCtx {
   uint32_t jobId;
 };
 
-static bool readExact(WiFiClient* s, uint8_t* buf, size_t len, String& err) {
+// 帯の取得の締切を過ぎたときの error（やり直しはしない）
+static const char kErrRowsTotalTimeout[] = "rows_total_timeout";
+
+// len バイトちょうど読む。無通信の待ち（HTTP_TIMEOUT_MS）とは別に、帯の取得の締切 d でも打ち切る
+// （少しずつ届き続けると無通信の待ちには掛からないため）。
+static bool readExact(WiFiClient* s, uint8_t* buf, size_t len, const Deadline& d, String& err) {
   size_t got = 0;
   uint32_t last = millis();
   while (got < len) {
@@ -176,15 +192,20 @@ static bool readExact(WiFiClient* s, uint8_t* buf, size_t len, String& err) {
       if (n > 0) {
         got += static_cast<size_t>(n);
         last = millis();
+        if (got < len && d.expired(millis())) {
+          err = kErrRowsTotalTimeout;
+          return false;
+        }
         continue;
       }
     } else if (!s->connected()) {
       err = "rows_disconnected";
       return false;
     }
-    if (millis() - last > HTTP_TIMEOUT_MS) {
-      err = "rows_read_timeout";
-      return false;
+    switch (readStopCheck(millis(), last, HTTP_TIMEOUT_MS, d)) {
+      case ReadStop::Continue: break;
+      case ReadStop::Idle: err = "rows_read_timeout"; return false;
+      case ReadStop::Total: err = kErrRowsTotalTimeout; return false;
     }
     led::tick();
     delay(1);
@@ -192,16 +213,27 @@ static bool readExact(WiFiClient* s, uint8_t* buf, size_t len, String& err) {
   return true;
 }
 
-// 1 回ぶんの取得。retryable はやり直す意味があるか。
+// 1 回ぶんの取得。retryable はやり直す意味があるか。d は帯の取得の締切。
 static bool fetchRowsOnce(uint32_t job, uint32_t offset, uint16_t rows, uint8_t* buf,
-                          String& err, bool& retryable) {
+                          const Deadline& d, String& err, bool& retryable) {
   retryable = true;
   char path[96];
   snprintf(path, sizeof(path), "/api/printer/jobs/%lu/rows?offset=%lu&count=%u",
            static_cast<unsigned long>(job), static_cast<unsigned long>(offset),
            static_cast<unsigned>(rows));
-  if (!beginRequest(path)) { err = "rows_begin_failed"; return false; }
-  const int code = http.GET();
+  // 接続と応答の待ちも締切の残りで頭打ちにする（TLS のハンドシェイクは TLS_HANDSHAKE_TIMEOUT_S のまま）
+  // 1 秒未満は打ち切る（HTTPClient は待ち時間を秒に丸めて WiFiClient::setTimeout に渡し、
+  // そこで SO_RCVTIMEO に 0 秒が入ると待ち無制限になるため。WiFiClient.cpp で確認）
+  const uint32_t left = d.remaining(millis());
+  if (left < 1000) { err = kErrRowsTotalTimeout; retryable = false; return false; }
+  http.setConnectTimeout(static_cast<int32_t>(min(left, static_cast<uint32_t>(HTTP_CONNECT_TIMEOUT_MS))));
+  http.setTimeout(static_cast<uint16_t>(min(left, static_cast<uint32_t>(HTTP_TIMEOUT_MS))));
+  const bool begun = beginRequest(path);
+  const int code = begun ? http.GET() : 0;
+  // 次の要求（claim / done）のために既定の待ち時間に戻す
+  http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!begun) { err = "rows_begin_failed"; return false; }
   noteCode(code);
   if (code != 200) {
     err = code < 0 ? String("rows_conn_") + (-code) : String("rows_http_") + code;
@@ -217,8 +249,9 @@ static bool fetchRowsOnce(uint32_t job, uint32_t offset, uint16_t rows, uint8_t*
     return false;
   }
   WiFiClient* s = http.getStreamPtr();
-  if (!s || !readExact(s, buf, expected, err)) {
+  if (!s || !readExact(s, buf, expected, d, err)) {
     if (err.length() == 0) err = "rows_no_stream";
+    if (err == kErrRowsTotalTimeout) retryable = false;
     dropConnection();
     return false;
   }
@@ -228,12 +261,13 @@ static bool fetchRowsOnce(uint32_t job, uint32_t offset, uint16_t rows, uint8_t*
 
 static bool rowsReader(void* ctx, uint32_t offset, uint16_t rows, uint8_t* buf, String& err) {
   const JobCtx* job = static_cast<const JobCtx*>(ctx);
-  const uint32_t started = millis();
+  // 1 つの帯の取得（やり直しを含む）の締切。HTTP の処理と本文の読み取りにも渡す
+  const Deadline d{millis(), FETCH_TOTAL_TIMEOUT_MS};
   for (int attempt = 0; attempt <= FETCH_RETRIES; ++attempt) {
     if (attempt > 0) {
       const uint32_t wait = static_cast<uint32_t>(FETCH_RETRY_DELAY_MS) * attempt;
-      // やり直し全体の時間の上限
-      if (millis() - started + wait > FETCH_TOTAL_TIMEOUT_MS) {
+      // 待ってから送る時間が残っていなければやめる
+      if (d.remaining(millis()) <= wait) {
         err += "_gave_up";
         return false;
       }
@@ -244,9 +278,15 @@ static bool rowsReader(void* ctx, uint32_t offset, uint16_t rows, uint8_t* buf, 
     bool retryable = true;
     err = "";
     if (WiFi.status() != WL_CONNECTED) { err = "wifi_lost"; continue; }
-    if (fetchRowsOnce(job->jobId, offset, rows, buf, err, retryable)) return true;
+    const bool got = fetchRowsOnce(job->jobId, offset, rows, buf, d, err, retryable);
+    // 成功でも締切を過ぎていたら失敗にする（1 つの帯にかける時間の上限を守る）
+    if (got && !d.expired(millis())) return true;
+    if (got) {
+      err = kErrRowsTotalTimeout;
+      return false;
+    }
     if (!retryable) return false;
-    if (millis() - started > FETCH_TOTAL_TIMEOUT_MS) {
+    if (d.expired(millis())) {
       err += "_gave_up";
       return false;
     }
@@ -291,6 +331,15 @@ static void tryPostDone() {
     case DoneOutcome::Conflict:
       // サーバー側ではすでに別の結果で終わっている。送り直しはやめるが、記録は残す
       app::setLastError(String("done_conflict_job_") + pending.jobId);
+      pending.clear();
+      break;
+    case DoneOutcome::Gone:
+      // 印刷の記録がサーバーから消えている（docs/api.md 5）。報告先が無いので送り直しをやめ、
+      // 次の claim に進む。送れなかった結果は USB のログに残す
+      Serial.printf("[done] job=%lu not_found: 報告をやめる (ok=%d error=%s)\n",
+                    static_cast<unsigned long>(pending.jobId), pending.ok,
+                    pending.error[0] ? pending.error : "-");
+      app::setLastError(String("done_gone_job_") + pending.jobId);
       pending.clear();
       break;
     case DoneOutcome::Retry:
@@ -361,13 +410,17 @@ static void claimAndPrint() {
   String err;
   const bool ok = printer::printStream(info.height, FETCH_ROWS, rowsReader, &ctx, err);
   printingNow = false;
-  // 失敗しても、そこまで刷った分をちぎれるように紙を送る（先頭から刷り直さない）
-  printer::feed();
+  // 失敗しても、そこまで刷った分をちぎれるように紙を送る（先頭から刷り直さない）。
+  // ただし帯の途中で止まったときは送らない（データとして読まれるおそれがある）
+  printer::feedIfSafe();
   led::set(led::State::Idle);
   if (!ok) {
     app::setLastError(String("job_") + info.jobId + "_" + err);
     led::showFailure();
   }
+  if (planAfterPrint(printer::lastFailure()).stopAutoClaim)
+    haltAfterStall(String("job_") + info.jobId);
+  // 帯の途中で止まったときも done は ok:false（error = uart_stall）で報告する
   pending.set(info.jobId, ok, ok ? "" : err.c_str(), millis());
   tryPostDone();
 }

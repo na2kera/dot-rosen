@@ -28,8 +28,13 @@ bool tick();
 // 未送信の完了報告があるか
 bool hasPendingDone();
 
+// CLAIM ON / OFF。ON にすると帯の途中で止まったときのエラー表示も解除する
 void setAutoClaim(bool on);
 bool autoClaim();
+// 帯の途中で送信を打ち切った（printer::lastFailure() == MidBand）ときに呼ぶ。
+// 自動の受け取りを止め（CLAIM OFF と同じ）、LED をエラー表示にして USB にログを出す。
+// 再開は電源の入れ直しか CLAIM ON。where はログ用（"job_42" / "test" / "usb_print"）
+void haltAfterStall(const String& where);
 
 Health health();
 int lastHttpCode();

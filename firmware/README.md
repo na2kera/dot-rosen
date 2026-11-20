@@ -35,6 +35,7 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 | Wi-Fi 切断（Wi-Fi 未設定のときも） | 赤の点滅 |
 | サーバーに届かない・認証エラー・時刻合わせの失敗 | 黄 |
 | 印刷の失敗 | 赤（約 4 秒） |
+| 帯の途中で止まり、自動の受け取りを止めている（下記） | 赤（`CLAIM ON` か電源の入れ直しまで） |
 
 ## ボタン（本体の G39）
 
@@ -52,7 +53,7 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 1. Wi-Fi 接続後、NTP で時刻を合わせる。合うまでサーバーには接続しない（15 秒合わなければ黄色、`LAST_ERROR ntp_timeout`。その後もやり直し続ける）。待つ間もボタンと USB は動く。
    - 注（未検証）: このコア（Arduino-ESP32 2.0.17）の設定には `MBEDTLS_HAVE_TIME_DATE` が無く、**証明書の有効期間（日付）は検証されない可能性がある**。証明書の署名の検証は行う。時刻合わせは取り決めどおり行っている。
 2. `POST /api/printer/claim` で印刷を取りに行く（`AUTO_CLAIM` / `CLAIM ON` のとき）。204 なら何もしない。
-   - 間隔は通常 3 秒（`POLL_INTERVAL_MS`）。最後に印刷を受け取ってから（起動直後は起動から）2 分間（`POLL_IDLE_AFTER_MS`）印刷が無ければ 10 秒（`POLL_INTERVAL_IDLE_MS`）に延ばす。サーバーの無料枠（1 日 10 万リクエスト）を節約するため（docs/api.md 5 の末尾）。
+   - 間隔は通常 3 秒（`POLL_INTERVAL_MS`）。最後に印刷を受け取ってから（起動直後は起動から）2 分間（`POLL_IDLE_AFTER_MS`）印刷が無ければ 10 秒（`POLL_INTERVAL_IDLE_MS`）に延ばす。延ばした状態は次の印刷の受信かボタン操作まで保つ（何日たっても 3 秒に戻らない）。サーバーの無料枠（1 日 10 万リクエスト）を節約するため（docs/api.md 5 の末尾）。
    - 印刷を受け取ったとき（claim が 200）と、本体ボタンを押したとき（テスト印刷）は 3 秒に戻す。USB コマンドでは戻らない。
    - 未送信の完了報告がある間は、送り直しを 3 秒おきに行う（延ばさない）。
    - 今の間隔は `STATUS` の `POLL interval_ms=...` で見える。
@@ -60,17 +61,29 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
    - JSON が閉じ括弧まであること、`jobId` / `width` / `height` が終端まで読める 0 以上の整数であること、`width` が 384、`height` が 1〜`MAX_JOB_HEIGHT`（3200）であることを確かめる。
    - どれかが欠けたら印刷しない。`jobId` が読めれば `done` に `{"ok":false,"error":"bad_claim"}` を報告する。`jobId` も読めなければ報告できないので、`LAST_ERROR claim_bad_no_job_...` を記録して次の周期へ。
 3. `GET /api/printer/jobs/<jobId>/rows?offset=<行>&count=<FETCH_ROWS>` で帯（既定 96 行 = 4608 バイト）を取得し、その帯を `GS v 0` で印刷する。これを最後の行まで繰り返す。
-   - 帯の取得に失敗したら `FETCH_RETRIES` 回までやり直す（400 / 401 / 404 / 409 はやり直さない）。1 つの帯にかける時間は、やり直しを含めて `FETCH_TOTAL_TIMEOUT_MS`（90 秒）まで。
+   - 帯の取得に失敗したら `FETCH_RETRIES` 回までやり直す（400 / 401 / 404 / 409 はやり直さない）。1 つの帯にかける時間は、やり直しを含めて `FETCH_TOTAL_TIMEOUT_MS`（90 秒）まで。この締切は接続・応答の待ち（残り時間で頭打ち）と本文の読み取りにも効き、少しずつ届き続けていても 90 秒で打ち切る（`rows_total_timeout`。やり直さない）。読み切れても締切を過ぎていれば失敗にする。TLS のハンドシェイク（最大 10 秒）は頭打ちにしないので、最悪で 90 秒を少し超えることがある。
    - それでもだめなら、そこまで刷った分はそのままにして（紙を送ってちぎれるようにする）失敗を報告する。先頭から刷り直さない。
 4. 紙を `PRINTER_FEED_LINES` 行送り、`POST /api/printer/jobs/<jobId>/done` に `{"ok":true}` か `{"ok":false,"error":"<64 文字までの英数字と記号>"}`。
    - 200 は受理。409 は「サーバー側ではすでに別の結果で終わっている」で、送り直しはやめるが `LAST_ERROR done_conflict_job_<id>` を記録する（STATUS で見える）。
-   - それ以外（通信失敗を含む）は、結果を **未送信の完了報告** として持ち続け、問い合わせの周期（3 秒）ごとに 200 か 409 が返るまで送り直す。その間は次の `claim` をしない。Wi-Fi が切れても保持し、つながり直したら送り直す。電源を切ると消える（そのときサーバーは 5 分後に時間切れとして扱う）。送り直しの待ちの間もボタンと USB コマンドは動く。
+   - 404 は「印刷の記録がサーバーから消えている」（印刷後に Wi-Fi が切れている間に記録が消えた場合など）。報告先が無いので送り直しをやめて次の `claim` に進み、USB に `[done] job=<id> not_found ...` と `LAST_ERROR done_gone_job_<id>` を出す。
+   - それ以外（401・通信失敗を含む）は、結果を **未送信の完了報告** として持ち続け、問い合わせの周期（3 秒）ごとに 200 か 409 が返るまで送り直す。その間は次の `claim` をしない。Wi-Fi が切れても保持し、つながり直したら送り直す（何日切れていても、つながり直せばすぐ送る）。電源を切ると消える（そのときサーバーは 5 分後に時間切れとして扱う）。送り直しの待ちの間もボタンと USB コマンドは動く。
 
 接続は keep-alive で使い回す。ただし応答の本文を最後まで読み切れたときだけで、読み切れない場合（エラー応答、長さ不明、時間切れなど）は接続を閉じる。
 
-`error` の主な値: `bad_claim`、`rows_http_<コード>`、`rows_conn_<番号>`、`rows_bad_length_<長さ>`、`rows_read_timeout`、`rows_disconnected`、`wifi_lost`（やり直しの時間切れでは末尾に `_gave_up`）、`printer_busy`（CTS 使用時。その帯で打ち切ってプリンタを初期化し直す）、`printer_no_response` / `paper_out`（`PRINTER_SYNC_AFTER_BAND` 使用時）。
+`error` の主な値: `bad_claim`、`rows_http_<コード>`、`rows_conn_<番号>`、`rows_bad_length_<長さ>`、`rows_read_timeout`、`rows_disconnected`、`wifi_lost`（やり直しの時間切れでは末尾に `_gave_up`）、`printer_busy`（CTS 使用時。帯のヘッダを送る前に打ち切ってプリンタを初期化し直す）、`uart_stall`（CTS 使用時。帯の途中で打ち切った。下記）、`rows_total_timeout`（帯の取得の締切切れ）、`printer_no_response` / `paper_out`（`PRINTER_SYNC_AFTER_BAND` 使用時）。
 
 証明書の検証を切りたいとき（非常用）は `config.h` の `TLS_VERIFY` を 0 にする。組み込んだルート証明書は `include/root_ca.h` の先頭に一覧がある。
+
+### 帯の途中で止まったとき（`PRINTER_USE_CTS 1` のときだけ起きる）
+
+`GS v 0` のヘッダとデータの一部を送ったあと、CTS が `PRINTER_CTS_TIMEOUT_MS`（10 秒）より長く busy のままだと、残りを送らずに打ち切る。プリンタが残りのデータを待ち続けているかもしれず、そのあとに送った命令は画像のデータとして読まれて次の印刷も壊れるおそれがある。復旧の手順は作り込んでいない（実機で試せていない）。そのため:
+
+- ESC @（初期化）も紙送りも送らない。
+- `done` は `{"ok":false,"error":"uart_stall"}` で報告する（送り直しは従来どおり）。
+- **自動の受け取りを止める**（`CLAIM OFF` と同じ。`STATUS` で `auto_claim=off`）。LED は赤のままになる。USB に `[error] uart_stall ...` のログと `LAST_ERROR <job_<id> / test / usb_print>_uart_stall_claim_off` を出す。テスト印刷・`PRINT` で起きたときも同じ。
+- 再開は、**プリンタの電源を入れ直してからテスト印刷（ボタンか `TEST 1`）で確かめ、`CLAIM ON` を送る**。ATOM Lite ごと電源を入れ直しても再開する（`AUTO_CLAIM` の値に戻る）。
+
+既定（`PRINTER_USE_CTS 0`）では送信を打ち切らないので、この動きにはならない。
 
 ## USB シリアルのコマンド（115200bps、1 行 1 コマンド、改行は LF か CRLF）
 
@@ -83,7 +96,7 @@ PlatformIO（Arduino フレームワーク、`espressif32@6.12.0` = Arduino-ESP3
 | `BAUD ?` | プリンタに速度を問い合わせる（GS g 7） | `BAUD local=<こちらの速度> printer=<応答の文字列 か no_response>` |
 | `PAPER` | 紙の状態を問い合わせる（DLE EOT 2、DLE EOT 4、GS r 1） | `PAPER raw dle_eot2=0x.. dle_eot4=0x.. gs_r1=0x..`（応答なしは `none`）のあと、`PAPER ok` / `PAPER out` / `PAPER ok near_end` / `PAPER unknown` / `PAPER 未対応 (no_response)` |
 | `PRINT <高さ>` | PC から生データを受け取って印刷する（下記） | `READY <バイト数>` を帯ごとに、最後に `DONE`、失敗なら `ERR <理由>` のあと `RESYNC` |
-| `CLAIM ON` / `CLAIM OFF` | 自動 claim の入・切（電源を切ると `AUTO_CLAIM` の値に戻る）。未送信の完了報告の送り直しは入・切に関係なく続ける | `CLAIM ON` / `CLAIM OFF` |
+| `CLAIM ON` / `CLAIM OFF` | 自動 claim の入・切（電源を切ると `AUTO_CLAIM` の値に戻る）。未送信の完了報告の送り直しは入・切に関係なく続ける。`CLAIM ON` は帯の途中で止まったときの赤の表示も消す | `CLAIM ON` / `CLAIM OFF` |
 | `HELP` | コマンド一覧 | 1 行 |
 
 `STATUS` の返事（1 行ずつ）:
@@ -136,10 +149,12 @@ LAST_ERROR ...
    - `gs_r1` が応答し、紙を外すと `PAPER out` になるなら、`config.h` の `PRINTER_SYNC_AFTER_BAND` を 1 にする。帯ごとに処理の完了を待ち、紙切れなら `done` に `ok:false`（`paper_out`）を送るようになる。
 5. **サーバーからの印刷**: secrets.h を書いて書き込み（`CLAIM OFF` にしていたなら `CLAIM ON`）、LED が緑になるのを確かめてから、画面から印刷を申し込む。印刷後に管理画面で `done` になっているか確かめる。
    - 印刷中に Wi-Fi を切り、`failed` になるか、`STATUS` の `PENDING_DONE` に結果が残り、つながり直したあとに送られて `none` に戻るかを確かめる。
+   - 印刷後に Wi-Fi を切り、その間にサーバーの印刷の記録を消してからつなぎ直し、`done` が 404 になって `PENDING_DONE none` に戻り、次の印刷を受け取れるかを確かめる（未検証）。
+6. **CTS を使う場合（`PRINTER_USE_CTS 1`）の帯の途中での停止**（未検証）: 印刷中に CTS が busy のまま 10 秒を超える状況を作り、紙送り・ESC @ が送られないこと、`done` が `ok:false`（`uart_stall`）になること、`auto_claim=off` と LED の赤になることを確かめる。そのあとプリンタの電源を入れ直し、テスト印刷が正しく出るか、`CLAIM ON` で受け取りが再開するかを見る。プリンタの電源を入れ直さずに次の命令を送ったときにどうなるか（データとして読まれるか）も記録する。
 
 ## PC 上のテスト
 
-機器に依存しない部分（`GS v 0` ヘッダ、帯分割、ボーレート命令、状態の読み取り、テストパターン、コマンドの読み取り、claim の応答の検査、HTTP 本文の終端の判定（Content-Length / chunked）、done の応答の分類と未送信の完了報告の予約、rows のやり直しの判定、CTS の busy の集計、error 文字列）を PC で確かめる。
+機器に依存しない部分（`GS v 0` ヘッダ、帯分割、ボーレート命令、状態の読み取り、テストパターン、コマンドの読み取り、claim の応答の検査、HTTP 本文の終端の判定（Content-Length / chunked）、done の応答の分類（404 を含む）と未送信の完了報告の予約（長い切断のあと）、帯の取得の締切、帯の途中で止まったあとの扱い、問い合わせ間隔の idle の保持、rows のやり直しの判定、CTS の busy の集計、error 文字列）を PC で確かめる。
 
 ```sh
 cd firmware

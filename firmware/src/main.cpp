@@ -18,12 +18,13 @@ static bool wifiEverConnected = false;
 static bool wifiWasConnected = false;
 static uint32_t lastWifiAttempt = 0;
 static uint32_t lastPoll = 0;
-// 最後に印刷を受け取った時刻（起動時・本体ボタンでも更新）。問い合わせ間隔の切り替えに使う
-static uint32_t lastActivity = 0;
+// 最後に印刷を受け取った時刻（起動時・本体ボタンでも更新）と、2 分たって延ばした状態。
+// 問い合わせ間隔の切り替えに使う（延ばした状態は印刷の受信・ボタン操作でだけ解除）
+static PollIdle pollIdle;
 
 static uint32_t currentPollInterval() {
-  return pollInterval(millis(), lastActivity, server::hasPendingDone(), POLL_INTERVAL_MS,
-                      POLL_INTERVAL_IDLE_MS, POLL_IDLE_AFTER_MS);
+  return pollIdle.interval(millis(), server::hasPendingDone(), POLL_INTERVAL_MS,
+                           POLL_INTERVAL_IDLE_MS, POLL_IDLE_AFTER_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ static void runPattern(Pattern p) {
   if (!ok) {
     app::setLastError(String("test_") + static_cast<int>(p) + "_" + err);
     led::showFailure();
+    if (planAfterPrint(printer::lastFailure()).stopAutoClaim) server::haltAfterStall("test");
   }
   Serial.println(ok ? "DONE" : (String("ERR ") + err).c_str());
 }
@@ -84,7 +86,7 @@ static void cmdStatus() {
   Serial.printf("NTP %s\n", server::timeSynced() ? "synced" : "not_synced");
   Serial.printf("POLL interval_ms=%lu idle_ms=%lu\n",
                 static_cast<unsigned long>(currentPollInterval()),
-                static_cast<unsigned long>(millis() - lastActivity));
+                static_cast<unsigned long>(millis() - pollIdle.lastActivity));
   Serial.printf("JOB id=%lu rows_sent=%lu height=%lu printing=%d\n",
                 static_cast<unsigned long>(server::jobId()),
                 static_cast<unsigned long>(printer::rowsSent()),
@@ -183,13 +185,14 @@ static void handleLine(const char* line) {
       led::set(led::State::Printing);
       String err;
       const bool ok = printer::printStream(c.arg, FETCH_ROWS, usbReader, nullptr, err);
-      printer::feed();
+      printer::feedIfSafe();  // 帯の途中で止まったときは紙を送らない
       led::set(prev);
       if (ok) {
         Serial.println("DONE");
       } else {
         app::setLastError(String("usb_print_") + err);
         led::showFailure();
+        if (planAfterPrint(printer::lastFailure()).stopAutoClaim) server::haltAfterStall("usb_print");
         Serial.printf("ERR %s\n", err.c_str());
         // 再同期: 入力が USB_RESYNC_QUIET_MS 途切れるまで読み捨てる（行コマンドとして解釈しない）
         uint32_t lastByte = millis();
@@ -260,14 +263,14 @@ static void pollButton() {
       longFired = false;
     } else if (!longFired) {
       Serial.println("[button] short -> TEST 1");
-      lastActivity = millis();  // 問い合わせ間隔を短い方に戻す
+      pollIdle.activity(millis());  // 問い合わせ間隔を短い方に戻す
       runPattern(Pattern::Test1);
     }
   }
   if (stablePressed && !longFired && now - pressedAt >= BUTTON_LONG_MS) {
     longFired = true;
     Serial.println("[button] long -> TEST 2");
-    lastActivity = millis();
+    pollIdle.activity(millis());
     runPattern(Pattern::Test2);
   }
 }
@@ -309,7 +312,7 @@ static void pollNetwork() {
   }
   lastPoll = millis();
   // 未送信の完了報告があれば送り直しだけ、無ければ claim
-  if (server::tick()) lastActivity = millis();
+  if (server::tick()) pollIdle.activity(millis());
   // 印刷の後も、問い合わせの間隔は印刷が終わってから数える
   lastPoll = millis();
   switch (server::health()) {
@@ -320,7 +323,7 @@ static void pollNetwork() {
 }
 
 void setup() {
-  lastActivity = millis();  // 起動直後は起動時刻から数える
+  pollIdle.activity(millis());  // 起動直後は起動時刻から数える
   // PRINT で 1 帯ぶんのデータを受け取れるよう、受信バッファを begin の前に広げる
   Serial.setRxBufferSize(FETCH_ROWS * kRowBytes + 256);
   Serial.begin(USB_BAUD);
@@ -343,6 +346,8 @@ void setup() {
 }
 
 void loop() {
+  // 2 分たったかを毎周見て、問い合わせ間隔の idle を保持する（Wi-Fi が切れている間も）
+  (void)currentPollInterval();
   pollSerial();
   pollButton();
   pollNetwork();

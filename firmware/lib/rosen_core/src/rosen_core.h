@@ -168,9 +168,50 @@ class BodyReader {
 enum class DoneOutcome : uint8_t {
   Accepted,  // 200: 受理
   Conflict,  // 409: サーバー側ではすでに別の結果で終わっている（送り直しはやめる）
-  Retry,     // それ以外（通信失敗を含む）: 送り直す
+  Gone,      // 404: 印刷の記録がサーバーから消えている。報告先が無いので送り直しをやめ、次の claim に進む
+  Retry,     // それ以外（401・通信失敗を含む）: 送り直す
 };
 DoneOutcome classifyDoneCode(int httpCode);
+
+// ---------------------------------------------------------------------------
+// 帯の取得の締切。開始時刻からの経過を符号なしの差で測るので millis() の桁あふれに強い。
+// ---------------------------------------------------------------------------
+struct Deadline {
+  uint32_t start;    // millis()
+  uint32_t limitMs;  // 開始からこの時間で打ち切る
+  bool expired(uint32_t now) const { return now - start >= limitMs; }
+  // 残り時間（過ぎていれば 0）
+  uint32_t remaining(uint32_t now) const {
+    const uint32_t e = now - start;
+    return e >= limitMs ? 0 : limitMs - e;
+  }
+};
+enum class ReadStop : uint8_t {
+  Continue,  // 読み続ける
+  Idle,      // 最後の受信から idleMs を超えた（無通信）
+  Total,     // 締切を過ぎた（受信が続いていても打ち切る）
+};
+// 本文の読み取りを続けるか。締切を無通信より先に見る。
+ReadStop readStopCheck(uint32_t now, uint32_t lastRx, uint32_t idleMs, const Deadline& d);
+
+// ---------------------------------------------------------------------------
+// 印刷の失敗のしかたと、そのあとの扱い
+// ---------------------------------------------------------------------------
+enum class PrintFail : uint8_t {
+  None,     // 成功
+  Clean,    // 帯のヘッダ（GS v 0）を送る前の失敗。プリンタはデータ待ちになっていない
+  MidBand,  // ヘッダを送ったあと、その帯のデータを送り切る前に送信を打ち切った
+};
+struct AfterPrint {
+  bool resetPrinter;   // ESC @ を送る
+  bool feedPaper;      // 紙送りを送る
+  bool stopAutoClaim;  // 自動の受け取りを止める（CLAIM OFF と同じ。LED はエラー表示）
+};
+// MidBand ではプリンタが残りのデータを待っているかもしれず、後続の命令が画像に吸われるので
+// ESC @ も紙送りも送らず、自動の受け取りを止める（復旧手順は作り込まない。実機で未確認）。
+AfterPrint planAfterPrint(PrintFail f);
+// 帯の途中で送信を打ち切ったときの error
+extern const char kErrUartStall[];
 
 // rows の失敗をやり直すか（400 範囲外 / 401 / 404 / 409 printing でない はやり直さない）
 bool rowsRetryable(int httpCode);
@@ -182,7 +223,10 @@ struct PendingDone {
   bool ok = false;
   char error[65] = {0};   // sanitizeErrorCode 済み
   uint32_t attempts = 0;
-  uint32_t nextAt = 0;    // millis()
+  // 前回（set か retryLater）の時刻と、そこから次に送るまでの待ち。
+  // 経過を符号なしの差（now - lastAt）で測るので、長く Wi-Fi が切れていても送り直しは止まらない。
+  uint32_t lastAt = 0;    // millis()
+  uint32_t waitMs = 0;
   void set(uint32_t job, bool okResult, const char* err, uint32_t now);
   bool due(uint32_t now) const;
   // 送れなかった: interval 後にもう一度
@@ -190,11 +234,17 @@ struct PendingDone {
   void clear() { active = false; }
 };
 
-// 問い合わせの間隔を決める。lastActivity は最後に印刷を受け取った時刻
-// （起動時・本体ボタンを押した時刻でも更新する）。未送信の完了報告があれば常に fastMs。
-// now - lastActivity が idleAfterMs 以上なら slowMs、そうでなければ fastMs。
-uint32_t pollInterval(uint32_t now, uint32_t lastActivity, bool pendingDone, uint32_t fastMs,
-                      uint32_t slowMs, uint32_t idleAfterMs);
+// 問い合わせの間隔を決める。activity() は印刷を受け取ったとき・本体ボタンを押したとき・起動時に呼ぶ。
+// 最後の活動から idleAfterMs たつと idle を保持し（millis() が 1 周しても戻らない）、
+// 次の activity() まで slowMs。未送信の完了報告があれば常に fastMs（idle は保持したまま）。
+// interval() は問い合わせの周期より短い間隔で呼ぶこと（経過の判定もここで行う）。
+struct PollIdle {
+  uint32_t lastActivity = 0;  // millis()
+  bool idle = false;
+  void activity(uint32_t now) { lastActivity = now; idle = false; }
+  uint32_t interval(uint32_t now, bool pendingDone, uint32_t fastMs, uint32_t slowMs,
+                    uint32_t idleAfterMs);
+};
 
 // CTS（G19）が busy になった回数と累積時間（設定に関係なく、ピンを見て記録する）
 struct BusyStats {

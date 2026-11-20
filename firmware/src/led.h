@@ -18,6 +18,8 @@ void set(State s);
 State get();
 // 印刷の失敗: LED_FAIL_MS の間、赤（点灯）にする
 void showFailure();
+// 帯の途中で止まって自動の受け取りを止めている間: 赤（点灯）のままにする。ほかの表示より優先
+void setFault(bool on);
 void tick();
 
 }  // namespace led

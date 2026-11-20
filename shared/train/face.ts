@@ -40,8 +40,11 @@ const CONTOUR_INSET: Record<FaceDesign["contour"], readonly number[]> = {
 
 /** 輪郭ごとの、下端から数えた行ごとの内側への食い込み（全輪郭に共通の下の角の丸みより大きいときだけ効く） */
 const CONTOUR_BOTTOM_INSET: Partial<Record<FaceDesign["contour"], readonly number[]>> = {
-  round: [3],
+  round: [5, 3, 2, 1, 1],
 };
+
+/** ワイパー（根元の位置。short は窓が低いときの短いもの） */
+export type Wiper = { x: number; y: number; short?: boolean };
 
 export type FaceLayout = {
   /** 各行の車体の左端・右端（車体の無い行は -1） */
@@ -66,7 +69,7 @@ export type FaceLayout = {
   tails: Rect[];
   sign: Rect | null;
   /** ワイパーの根元 */
-  wipers: { x: number; y: number }[];
+  wipers: Wiper[];
   /** 手すりの x（行 43〜55） */
   handrails: number[];
   plate: Rect | null;
@@ -311,7 +314,8 @@ function buildFaceLayout(design: TrainDesign, lightPos: FaceDesign["lightPos"]):
   let lamps: Rect[] = [];
   let tails: Rect[] = [];
   search: for (const [lw, lh] of shapes) {
-    const ly = top ? 22 - (lh >> 1) : f.lightPos === "mid" ? 49 : 54;
+    // 角丸は下の角を丸めているので、腰の低い位置のライトを 2 ドット上げて角にかからないようにする
+    const ly = top ? 22 - (lh >> 1) : f.lightPos === "mid" ? 49 : (f.contour === "round" ? 52 : 54);
     for (const arr of ["beside", "below", "above", "none"] as TailArrangement[]) {
       const group = (x: number): { lamp: Rect; tail: Rect | null } => {
         const lampR = rectOf(x, ly, lw, lh);
@@ -409,13 +413,35 @@ function buildFaceLayout(design: TrainDesign, lightPos: FaceDesign["lightPos"]):
   }
 
   // ---- ワイパー（左右それぞれ、いちばん広い窓に1本） ----
-  const wipers: { x: number; y: number }[] = [];
+  // ワイパー全体が窓（ゴムの縁を含む）の中に収まり、行先表示に重ならない置き方を探す。
+  // 広い窓から順に、ふつうの長さ → 短いものを試し、どれも置けなければその側は付けない。
+  const wipers: Wiper[] = [];
+  const inPiece = (i: number, x: number, y: number) => {
+    const r = windows[i];
+    if (y < r.y || y >= r.y + r.h) return false;
+    const s = windowSpans[i];
+    const [a, b] = s ? s[y - r.y] : [r.x, r.x + r.w - 1];
+    return x >= a && x <= b;
+  };
   for (const half of ["left", "right"] as const) {
-    const pieces = windows.filter((w) => (w.x + w.w / 2 < 32) === (half === "left") && w.w >= 9);
-    if (pieces.length === 0) continue;
-    const p = pieces.reduce((a, b) => (b.w > a.w ? b : a));
-    const x = half === "left" ? p.x + 4 : p.x + p.w - 8;
-    wipers.push({ x, y: p.y + p.h - 2 });
+    const idx = windows.map((_, i) => i).filter((i) => (windows[i].x + windows[i].w / 2 < 32) === (half === "left") && windows[i].w >= 9);
+    idx.sort((a, b) => windows[b].w - windows[a].w);
+    let found: Wiper | null = null;
+    for (const short of [false, true]) {
+      for (const i of idx) {
+        const p = windows[i];
+        // 左は根元を窓の左寄り、右は右寄りに。左の窓が狭いときは右端からはみ出さないよう寄せる
+        const x = half === "left" ? Math.min(p.x + 4, p.x + p.w - 6) : p.x + p.w - 8;
+        const w: Wiper = { x, y: p.y + p.h - 2, short };
+        const dots = wiperDots(w);
+        if (!dots.every(([dx, dy]) => inPiece(i, dx, dy))) continue;
+        if (sign && dots.some(([dx, dy]) => dx >= sign!.x && dx < sign!.x + sign!.w && dy >= sign!.y && dy < sign!.y + sign!.h)) continue;
+        found = w;
+        break;
+      }
+      if (found) break;
+    }
+    if (found) wipers.push(found);
   }
 
   // ---- 手すり（扉の両脇。ライトとぶつかるなら付けない） ----
@@ -464,6 +490,25 @@ function buildFaceLayout(design: TrainDesign, lightPos: FaceDesign["lightPos"]):
     hatch,
     panto: design.side.roof !== "none" && pantographCars(design.cars)[0],
   };
+}
+
+/** ワイパー 1 本のドット（x, y, 色番号）。根元 (x, y) から右上へ伸びる。描画とテストで使う */
+export function wiperDots(w: Wiper): [number, number, number][] {
+  const out: [number, number, number][] = [];
+  const seg = (x0: number, y0: number, x1: number, y1: number, c: number) => {
+    const img = { kind: "indexed" as const, width: FACE_W, height: FACE_H, data: new Uint8Array(FACE_W * FACE_H) };
+    line(img, x0, y0, x1, y1, 1);
+    for (let i = 0; i < img.data.length; i++) if (img.data[i]) out.push([i % FACE_W, (i / FACE_W) | 0, c]);
+  };
+  if (w.short) {
+    seg(w.x, w.y, w.x + 3, w.y - 4, C_INK);
+    seg(w.x + 2, w.y - 4, w.x + 4, w.y - 5, C_FRAME);
+  } else {
+    seg(w.x, w.y, w.x + 4, w.y - 6, C_INK);
+    seg(w.x + 2, w.y - 5, w.x + 5, w.y - 7, C_FRAME);
+  }
+  out.push([w.x - 1, w.y + 1, C_METAL_LIGHT]);
+  return out;
 }
 
 export type RenderOptions = {
@@ -584,11 +629,7 @@ export function renderFace(design: TrainDesign, opts: RenderOptions = {}): Index
   if (L.sign) ledSign(img, L.sign.x, L.sign.y, L.sign.w);
 
   // ---- ワイパー ----
-  for (const { x, y } of L.wipers) {
-    line(img, x, y, x + 4, y - 6, C_INK);
-    line(img, x + 2, y - 5, x + 5, y - 7, C_FRAME);
-    dot(img, x - 1, y + 1, C_METAL_LIGHT);
-  }
+  for (const w of L.wipers) for (const [x, y, c] of wiperDots(w)) dot(img, x, y, c);
 
   // ---- 前照灯と尾灯 ----
   for (const l of L.lamps) {
@@ -607,23 +648,25 @@ export function renderFace(design: TrainDesign, opts: RenderOptions = {}): Index
   // ---- 足まわり ----
   rect(img, 17, 63, 5, 6, C_INTERIOR);
   rect(img, 42, 63, 5, 6, C_INTERIOR);
+  // 角丸は下の角を丸めているので、スカートと床下の線も車体の下端に合わせて狭める
+  const k = f.contour === "round" ? 3 : 0;
   if (f.skirt !== "none") {
     const h = f.skirt === "large" ? 7 : 4;
     poly(
       img,
       [
-        [12, 62],
-        [51, 62],
-        [48, 62 + h],
-        [15, 62 + h],
+        [12 + k, 62],
+        [51 - k, 62],
+        [48 - k, 62 + h],
+        [15 + k, 62 + h],
       ],
       C_METAL,
       C_EDGE_METAL,
     );
-    line(img, 15, 63, 48, 63, C_METAL_LIGHT);
+    line(img, 15 + k, 63, 48 - k, 63, C_METAL_LIGHT);
     for (const x of [18, 44]) rect(img, x, 65, 2, 2, C_INK);
   } else {
-    line(img, 12, 63, 51, 63, C_INK);
+    line(img, 12 + k, 63, 51 - k, 63, C_INK);
     line(img, 22, 64, 20, 68, C_METAL_DARK);
     line(img, 43, 64, 45, 68, C_METAL_DARK);
   }

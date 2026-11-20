@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { bitToRgba } from "../shared/pix/index.ts";
+import { createHash } from "node:crypto";
+import { bitToRgba, createIndexed } from "../shared/pix/index.ts";
+import { ledSign } from "../shared/train/draw.ts";
 import {
   C_GLASS,
   C_GLASS2,
@@ -40,6 +42,7 @@ import {
   toMono,
   tones,
   usedColorIndices,
+  wiperDots,
   type CarKind,
   type FaceDesign,
   type SideDesign,
@@ -139,6 +142,62 @@ describe("正面の顔", () => {
     expect(low).toEqual([]);
     // 扉なしの絵は変えていない（しきい値の元になった値）
     for (const contour of FACE_CHOICES.contour) expect(mins[`${contour.id}/none`]).toBe(95);
+  }, 120_000);
+
+  it("スカートと床下の線は、車体の下端より外にはみ出さない（角丸の下の角）", () => {
+    for (const contour of FACE_CHOICES.contour) {
+      for (const skirt of FACE_CHOICES.skirt) {
+        const d: TrainDesign = { ...base, face: { ...base.face, contour: contour.id, skirt: skirt.id } };
+        const img = renderFace(d);
+        const L = faceLayout(d);
+        for (const y of [62, 63]) {
+          for (let x = 0; x < FACE_W; x++) {
+            if (img.data[y * FACE_W + x] === 0) continue;
+            expect(x >= L.bodyLeft[FACE_BODY_BOTTOM] && x <= L.bodyRight[FACE_BODY_BOTTOM], `${contour.id}/${skirt.id} (${x},${y})`).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it("行先表示は、描き終わったあとも全部残っている（ワイパーなどに上書きされない）", () => {
+    const errors: string[] = [];
+    for (const face of product(FACE_CHOICES, FACE_KEYS)) {
+      if (face.sign === "none") continue;
+      const d: TrainDesign = { ...base, face: face as FaceDesign };
+      const L = faceLayout(d);
+      if (!L.sign) continue;
+      const img = renderFace(d);
+      const ref = createIndexed(FACE_W, FACE_H);
+      ledSign(ref, L.sign.x, L.sign.y, L.sign.w);
+      let bad = 0;
+      for (let y = L.sign.y; y < L.sign.y + L.sign.h; y++)
+        for (let x = L.sign.x; x < L.sign.x + L.sign.w; x++) if (img.data[y * FACE_W + x] !== ref.data[y * FACE_W + x]) bad++;
+      if (bad > 0) errors.push(`${Object.values(face).join("/")}: ${bad} ドット`);
+    }
+    expect(errors.slice(0, 20)).toEqual([]);
+  }, 120_000);
+
+  it("ワイパーのドットは、すべて窓のガラス（ゴムの縁を含む）の中にある", () => {
+    const errors: string[] = [];
+    for (const face of product(FACE_CHOICES, FACE_KEYS)) {
+      const L = faceLayout({ ...base, face: face as FaceDesign });
+      const inGlass = (x: number, y: number) => {
+        const t = L.throughGlass;
+        if (t && x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) return true;
+        return L.windows.some((r, i) => {
+          if (y < r.y || y >= r.y + r.h) return false;
+          const s = L.windowSpans[i];
+          const [a, b] = s ? s[y - r.y] : [r.x, r.x + r.w - 1];
+          return x >= a && x <= b;
+        });
+      };
+      for (const w of L.wipers) {
+        const out = wiperDots(w).find(([x, y]) => !inGlass(x, y));
+        if (out) errors.push(`${Object.values(face).join("/")}: (${out[0]},${out[1]})`);
+      }
+    }
+    expect(errors.slice(0, 20)).toEqual([]);
   }, 120_000);
 
   // ライトの形 3 種・輪郭 4 種も、ほかの部位の全組み合わせで、どの 2 つを比べても 48 ドット以上違う（Issue #3 の続き）
@@ -267,6 +326,20 @@ describe("側面", () => {
 });
 
 describe("決まった結果", () => {
+  // 絵の変化に気づくための、全通りをまとめたハッシュ。
+  // 絵を変えたら、このハッシュを更新すること。更新の前に、比較画像（pnpm sprites:sheet → node tools/run.mjs tools/issue3-sheet.ts）で
+  // 変わったのが意図した組み合わせ・意図したドットだけかを確かめること。
+  it("顔の全 19,440 通りと、側面の全 1,296 通り × 先頭・中間・最後尾の絵が変わっていない", () => {
+    const faceHash = createHash("sha256");
+    for (const face of product(FACE_CHOICES, FACE_KEYS)) faceHash.update(renderFace({ ...base, face: face as FaceDesign }).data);
+    const sideHash = createHash("sha256");
+    for (const side of product(SIDE_CHOICES, SIDE_KEYS)) {
+      const d: TrainDesign = { ...base, side: side as SideDesign };
+      for (const kind of ["lead", "middle", "tail"] as CarKind[]) sideHash.update(renderCar(d, kind).data);
+    }
+    expect({ face: faceHash.digest("hex"), side: sideHash.digest("hex") }).toEqual(EXPECTED_SPRITE_HASHES);
+  }, 120_000);
+
   it("同じデザインを2回描くと同じ結果", () => {
     const rng = createRng(1);
     for (let i = 0; i < 50; i++) {
@@ -288,6 +361,12 @@ describe("決まった結果", () => {
     }
   });
 });
+
+/** 上の「絵が変わっていない」の期待値 */
+const EXPECTED_SPRITE_HASHES = {
+  face: "4546785448056f89224aae35ff8090cf9a1dafdf13a18405bab168155b4f6d82",
+  side: "9c98e0d8064499ef8ef4d252e39a4ac9df5a5407be69faf2f6a94d40317d6100",
+};
 
 describe("parseTrainDesign", () => {
   it("正しい値は通り、余計なキーは捨て、16進は小文字にする", () => {

@@ -183,10 +183,10 @@ describe("路線カード", () => {
 /** 高さ、印刷用の CRC32、カラー版の CRC32（駅データやフォント、電車の絵を作り直したときも変わる） */
 const EXPECTED_HASHES: Record<string, string> = {
   "long-30st-16car": "2214 d1d40f47 e83397a1",
-  "loop-30st": "2290 5dafe5dd 9999a50",
+  "loop-30st": "2290 aa91ee46 dfa5757e",
   "short-2st-1car": "998 c7e33f8a 5d7e8c54",
   "side-two-x2-rotated-light": "1966 cd9702b0 67c66f68",
-  "unknown-glyph": "1042 247c6517 bdaf9df4",
+  "unknown-glyph": "1042 b2c3eb3d 62062948",
 };
 
 // ---- QR コードの読み戻し ----

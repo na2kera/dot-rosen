@@ -166,4 +166,33 @@ for (const set of ["bold", "light"] as const) {
   ms.save(path.join(OUT, "issue3-lights-contours-mono-bold.png"));
 }
 
+// 7. 角丸だけを見る: 列 = 四角・角丸・丸、行 = 扉 3 種 × ライトの位置 3 種。5 倍と 1 倍（サムネイルの大きさ）
+{
+  const S5 = 5;
+  const G = 20;
+  const left = 280;
+  const head = 70;
+  const contours = (["square", "round", "dome"] as const).map((id) => FACE_CHOICES.contour.find((c) => c.id === id)!);
+  const rows: { label: string; patch: Partial<FaceDesign> }[] = [];
+  for (const door of FACE_CHOICES.door)
+    for (const pos of FACE_CHOICES.lightPos) rows.push({ label: `扉 ${door.label}／ライト ${pos.label}`, patch: { door: door.id, lightPos: pos.id } });
+  const x1 = left + 3 * (FACE_W * S5 + G) + 40; // 1 倍の列の始まり
+  const s = new Sheet(x1 + 3 * (FACE_W + 12) + 20, head + rows.length * (FACE_H * S5 + G), BG);
+  s.text("角丸を見る: 四角・角丸・丸（左 3 列は 5 倍、右 3 列は 1 倍＝サムネイルの大きさ）", 12, 8, TEXT);
+  contours.forEach((c, i) => {
+    s.text(c.label, left + i * (FACE_W * S5 + G), 40, TEXT);
+    s.text(c.label.slice(0, 2), x1 + i * (FACE_W + 12), 40, TEXT);
+  });
+  rows.forEach((r, j) => {
+    const y = head + j * (FACE_H * S5 + G);
+    s.text(r.label, 12, y + (FACE_H * S5) / 2 - 8, TEXT);
+    contours.forEach((c, i) => {
+      const img = renderFace(face({ ...r.patch, contour: c.id }));
+      s.indexed(img, TRAIN_PALETTE, left + i * (FACE_W * S5 + G), y, S5);
+      s.indexed(img, TRAIN_PALETTE, x1 + i * (FACE_W + 12), y, 1);
+    });
+  });
+  s.save(path.join(OUT, "issue3-contour-round.png"));
+}
+
 console.log(`書き出し先: ${path.relative(ROOT, OUT)}/issue3-*.png`);

@@ -78,6 +78,8 @@ type Finding = {
   max: number;
   /** 見分けにくかった組み合わせに共通する条件 */
   when: string[];
+  /** 部位どうしの依存を崩さない形の、主な組み合わせ（1〜2 部位の値の組と、そのときに起きる割合） */
+  groups: { cond: string; hits: number; total: number; example: string }[];
   /** 代表例（差がいちばん小さいもの） */
   sample: Record<string, string>;
   view: number;
@@ -139,6 +141,33 @@ function audit(
           const seen = new Set(r.hits.map((n) => decode(n)[k]));
           if (seen.size < table[k].length) when.push(`${labels[k]}が「${table[k].filter((c) => seen.has(c.id)).map((c) => c.label).join("」「")}」`);
         });
+        // 主な組み合わせ: ほかの部位 1 つか 2 つの値の組ごとに、その値の組を持つ組み合わせのうち見分けにくかった割合を出し、
+        // 割合が高い（同じなら部位の数が少なく、件数が多い）順に 3 つ
+        const mainGroups = (hits: number[], of: number, pi: number) => {
+          const others = keys.map((_, i) => i).filter((i) => i !== pi);
+          const sets: number[][] = [...others.map((a) => [a]), ...others.flatMap((a, ai) => others.slice(ai + 1).map((b) => [a, b]))];
+          const cands: { cond: string; hits: number; total: number; example: string; size: number }[] = [];
+          for (const set of sets) {
+            const cnt = new Map<string, { n: number; first: number }>();
+            for (const h of hits) {
+              const sel = decode(h);
+              const key = set.map((i) => sel[keys[i]]).join("\t");
+              const c = cnt.get(key);
+              if (c) c.n++;
+              else cnt.set(key, { n: 1, first: h });
+            }
+            const total = of / set.reduce((a, i) => a * table[keys[i]].length, 1);
+            for (const [key, c] of cnt) {
+              const vals = key.split("\t");
+              const cond = set.map((i, q) => `${labels[keys[i]]}「${table[keys[i]].find((x) => x.id === vals[q])!.label}」`).join("かつ");
+              const sel = decode(c.first);
+              const example = keys.filter((_, i) => i !== pi).map((k) => `${labels[k]}=${table[k].find((x) => x.id === sel[k])!.label}`).join("、");
+              cands.push({ cond, hits: c.n, total, example, size: set.length });
+            }
+          }
+          cands.sort((a, b) => b.hits / b.total - a.hits / a.total || a.size - b.size || b.hits - a.hits);
+          return cands.slice(0, 3).map(({ size: _s, ...g }) => g);
+        };
         let best = 0;
         for (let q = 1; q < r.diffs.length; q++) if (r.diffs[q] < r.diffs[best]) best = q;
         out.push({
@@ -153,6 +182,7 @@ function audit(
           max: Math.max(...r.diffs),
           when,
           sample: { ...decode(r.hits[best]), [part]: table[part][i].id },
+          groups: mainGroups(r.hits, r.of, pi),
           view: v,
         });
       }
@@ -214,7 +244,8 @@ md.push("");
 md.push(`- しきい値: 違うドットが **${THRESHOLD} ドット未満** のペアを「見分けにくい」とした（顔の前面窓 5 種類が扉なしで見分けられている最小のペア差 95 の半分）。`);
 md.push("- 顔: 8 部位の全 19,440 通り（全数）。各部位について、ほかの 7 部位の組み合わせごとに、その部位の選択肢を 2 つずつ比べた。車体色は銀、帯は緑、8 両（顔のパンタグラフなし）。");
 md.push("- 側面: 5 部位の全 1,296 通り（全数）× 先頭車・中間車（パンタグラフは載せる、ロゴは既定）。鼻先は中間車に無いので先頭車だけで比べた。");
-md.push("- 「条件」は、見分けにくかった組み合わせに出てくる値が、その部位の選択肢の一部に限られるもの（限られない部位は書かない＝どの値でも起きる）。");
+md.push("- 「条件」は、見分けにくかった例に出てきた値を、部位ごとに別々に並べた一覧（その部位の選択肢の一部に限られるものだけ書く）。**これらの値がそろえば必ず起きる、という意味ではない**（部位どうしの組み合わせの依存は、この一覧からは消えている）。");
+md.push("- 「主な組み合わせ」は、ほかの部位 1 つか 2 つの値の組ごとに、その値の組を持つ組み合わせのうち何件で起きたか（割合の高い順に 3 つ）。部位どうしの依存を崩さずに読めるよう、例も 1 件ずつ付けた。");
 md.push("- 前面窓以外は直していない（一覧にしただけ）。");
 md.push(`- 実行時間 ${((Date.now() - t0) / 1000).toFixed(1)} 秒`);
 md.push("");
@@ -231,6 +262,8 @@ all.forEach((f, i) => {
   md.push(`### ${i + 1}. ${f.area} ${f.partLabel}: 「${f.a.label}」と「${f.b.label}」（${f.count.toLocaleString()} / ${f.of.toLocaleString()}）`);
   md.push("");
   md.push(`- 条件: ${f.when.length ? f.when.join("、") : "限定なし（どの組み合わせでも起きる）"}`);
+  md.push("- 主な組み合わせ:");
+  for (const g of f.groups) md.push(`  - ${g.cond}のとき: ${g.hits.toLocaleString()} / ${g.total.toLocaleString()} 件（例: ${g.example}）`);
   md.push(`- 違うドット: ${f.min}〜${f.max}`);
   md.push(`- 代表例（差がいちばん小さいもの）: ${Object.entries(f.sample).filter(([k]) => k !== f.part).map(([k, v]) => `${(f.area.startsWith("顔") ? FACE_PART_LABELS : SIDE_PART_LABELS)[k as never]}=${((f.area.startsWith("顔") ? faceTable : sideTable)[k].find((c) => c.id === v) ?? { label: v }).label}`).join("、")}`);
   md.push("");

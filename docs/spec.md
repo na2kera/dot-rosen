@@ -251,4 +251,5 @@
 ### そのほか
 
 - アプリ名は仮に「ドット路線メーカー」。
+- 公開先は `https://dot-rosen.na2kera.com`（独自ドメイン。2026-11-20 に設定）。`https://dot-rosen.na2kera.workers.dev` も残している。路線カードの QR コードと会場の QR コードには、そのとき開いていたドメインの URL が入るので、運用では独自ドメインのほうを使う。
 - Hono（サーバーのルーティング）と qrcode-generator（QR コード）を依存に加えた。

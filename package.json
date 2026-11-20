@@ -16,6 +16,7 @@
     "data:build": "node tools/run.mjs tools/build-stations.ts",
     "font:build": "node tools/run.mjs tools/build-font.ts",
     "og:build": "node tools/run.mjs tools/og-image.ts",
+    "icon:build": "node tools/run.mjs tools/icon-image.ts",
     "sprites:sheet": "node tools/run.mjs tools/sprites-sheet.ts",
     "sprites:bench": "node tools/run.mjs tools/bench-sprites.ts",
     "card:sheet": "node tools/run.mjs tools/card-sheet.ts",

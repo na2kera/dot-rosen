@@ -7,6 +7,7 @@ import { drawText, hasGlyph, measureText } from "../shared/font/index.ts";
 import { blit, createIndexed, encodePng, fillRect, indexedToRgba, type Rgba } from "../shared/pix/index.ts";
 import { COLOR_COUNT, defaultDesign, renderConsist, renderFace, TRAIN_PALETTE, type TrainDesign } from "../shared/train/index.ts";
 import { loadFont, loadStations } from "./lib/card-fixtures.ts";
+import { brandFaceDesign } from "./lib/brand-face.ts";
 import { ROOT } from "./lib/paths.ts";
 
 const W = 600;
@@ -52,13 +53,7 @@ centered("えきをつないで、じぶんだけの電車をつくろう。", W
 fillRect(image, 36, 116, 528, 144, PAPER);
 fillRect(image, 32, 120, 536, 136, PAPER);
 const base = defaultDesign();
-const orange: TrainDesign = {
-  ...base,
-  cars: 1,
-  bodyColor: "orange",
-  bandColor: "green",
-  face: { ...base.face, contour: "round", window: "three", lightShape: "square" },
-};
+const orange = brandFaceDesign();
 const green: TrainDesign = {
   ...base,
   cars: 2,

@@ -182,10 +182,10 @@ describe("路線カード", () => {
 
 /** 高さ、印刷用の CRC32、カラー版の CRC32（駅データやフォント、電車の絵を作り直したときも変わる） */
 const EXPECTED_HASHES: Record<string, string> = {
-  "long-30st-16car": "2214 909fc9ca a1f375c8",
-  "loop-30st": "2290 5a0527bd 96f4cb25",
-  "short-2st-1car": "998 5e27d67c 51d7af71",
-  "side-two-x2-rotated-light": "1966 5d4d68ac 22cf9a79",
+  "long-30st-16car": "2214 d1d40f47 e83397a1",
+  "loop-30st": "2290 5dafe5dd 9999a50",
+  "short-2st-1car": "998 c7e33f8a 5d7e8c54",
+  "side-two-x2-rotated-light": "1966 cd9702b0 67c66f68",
   "unknown-glyph": "1042 247c6517 bdaf9df4",
 };
 

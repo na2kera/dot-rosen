@@ -8,6 +8,6 @@ export function brandFaceDesign(): TrainDesign {
     cars: 1,
     bodyColor: "orange",
     bandColor: "green",
-    face: { ...base.face, contour: "round", window: "three", lightShape: "square" },
+    face: { ...base.face, contour: "round", window: "three", door: "center", lightShape: "square" },
   };
 }

@@ -111,6 +111,57 @@ describe("正面の顔", () => {
     });
     expect(errors.slice(0, 20)).toEqual([]);
   }, 120_000);
+
+  it("前面窓 5 種類は、貫通扉があっても見分けられる（Issue #3）", () => {
+    // 輪郭 × 扉ごとに、ほかの部位の全組み合わせで、窓のどの 2 種類を比べても違うドットが十分ある。
+    // 「十分」は、見分けられている扉なしの最小（直す前に測って 95）の半分以上 = 48。
+    const MIN_DIFF = 48;
+    const others = [...product(FACE_CHOICES, ["lightShape", "lightPos", "sign", "skirt", "paint"])];
+    const wins = FACE_CHOICES.window.map((w) => w.id);
+    const mins: Record<string, number> = {};
+    for (const contour of FACE_CHOICES.contour) {
+      for (const door of FACE_CHOICES.door) {
+        let min = Infinity;
+        for (const o of others) {
+          const imgs = wins.map((window) => renderFace({ ...base, face: { ...(o as Partial<FaceDesign>), contour: contour.id, door: door.id, window } as FaceDesign }).data);
+          for (let i = 0; i < imgs.length; i++) {
+            for (let j = i + 1; j < imgs.length; j++) {
+              let n = 0;
+              for (let k = 0; k < imgs[i].length; k++) if (imgs[i][k] !== imgs[j][k]) n++;
+              if (n < min) min = n;
+            }
+          }
+        }
+        mins[`${contour.id}/${door.id}`] = min;
+      }
+    }
+    const low = Object.entries(mins).filter(([, n]) => n < MIN_DIFF);
+    expect(low).toEqual([]);
+    // 扉なしの絵は変えていない（しきい値の元になった値）
+    for (const contour of FACE_CHOICES.contour) expect(mins[`${contour.id}/none`]).toBe(95);
+  }, 120_000);
+
+  // ライトの形 3 種・輪郭 4 種も、ほかの部位の全組み合わせで、どの 2 つを比べても 48 ドット以上違う（Issue #3 の続き）
+  for (const part of ["lightShape", "contour"] as const) {
+    it(`${part === "lightShape" ? "ライトの形" : "輪郭"}は、どの組み合わせでも見分けられる`, () => {
+      const MIN_DIFF = 48;
+      const rest = FACE_KEYS.filter((k) => k !== part);
+      const ids = FACE_CHOICES[part].map((c) => c.id);
+      const low = new Map<string, { n: number; at: string }>();
+      for (const o of product(FACE_CHOICES, rest)) {
+        const imgs = ids.map((id) => renderFace({ ...base, face: { ...(o as Partial<FaceDesign>), [part]: id } as FaceDesign }).data);
+        for (let i = 0; i < imgs.length; i++) {
+          for (let j = i + 1; j < imgs.length; j++) {
+            let n = 0;
+            for (let k = 0; k < imgs[i].length; k++) if (imgs[i][k] !== imgs[j][k]) n++;
+            const key = `${ids[i]}-${ids[j]}`;
+            if (n < MIN_DIFF && !low.has(key)) low.set(key, { n, at: Object.values(o).join("/") });
+          }
+        }
+      }
+      expect([...low]).toEqual([]);
+    }, 120_000);
+  }
 });
 
 describe("側面", () => {

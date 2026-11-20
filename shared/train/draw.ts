@@ -185,6 +185,16 @@ export function lamp(img: IndexedImage, x: number, y: number, w: number, h: numb
   dot(img, x + w - 2, y + 1, C_WHITE);
 }
 
+/**
+ * 角形の前照灯。lamp() と同じ大きさ（外側 1 ドットを含む）で、角を落とさない黒い枠の箱の中に、
+ * 金属の縁と光る面を描く（丸形の白い余白・丸い縁と、輪郭そのものが違って見えるように）。
+ */
+export function squareLamp(img: IndexedImage, x: number, y: number, w: number, h: number): void {
+  box(img, x - 1, y - 1, w + 2, h + 2, C_METAL_LIGHT, C_INK);
+  rect(img, x + 1, y + 1, w - 2, h - 2, C_LAMP);
+  dot(img, x + w - 2, y + 1, C_WHITE);
+}
+
 /** 行先表示（暗い地に橙の点） */
 export function ledSign(img: IndexedImage, x: number, y: number, w: number): void {
   box(img, x, y, w, 5, C_INTERIOR, C_METAL_DARK);

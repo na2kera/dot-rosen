@@ -7,6 +7,8 @@
 | `pnpm data:build` | `tools/build-stations.ts`。駅データ・地図データを `public/data/` に作り直す |
 | `pnpm font:build` | `tools/build-font.ts`。点データのフォントと woff2 を `public/fonts/` に作り直す（駅名の文字を使うので `data:build` の後に実行） |
 | `pnpm sprites:sheet` | `tools/sprites-sheet.ts`。電車のパーツの確認用一覧を `tools/out/sprites/` に出す（拡大ページは `review/`） |
+| `pnpm parts:audit` | `tools/parts-audit.ts`。顔と側面の全パーツで、選択肢を変えても絵がほとんど変わらない組み合わせを `tools/out/sprites/parts-audit.md` と `parts-audit.png` に出す（`sprites:sheet` のあとに実行）|
+| `node tools/run.mjs tools/issue3-sheet.ts` | Issue #3 の前面窓の比較画像を `tools/out/sprites/issue3-*.png` に出す（`sprites:sheet` のあとに実行）|
 | `pnpm sprites:bench` | `tools/bench-sprites.ts`。顔1つ・側面2両・白黒変換の時間を、新しいプロセスで 7 回測る |
 | `pnpm print:bench` | `tools/bench-print.ts`。`POST /api/print` の計算（本文の検査、路線データの検査、カードの描画、生データ）の時間を、新しいプロセスで 7 回測る |
 | `pnpm printer:fake` | `tools/fake-printer.ts`。プリンタの代わりに claim → rows → done を回し、受け取った画像を `tools/out/printed/` に PNG（と生データ .bin）で保存する。`PRINTER_TOKEN=... pnpm printer:fake --url http://127.0.0.1:5182 --once`。`--fail <理由>` で失敗の報告、`--no-done` で報告しない |

@@ -151,7 +151,7 @@ export function defaultDesign(): TrainDesign {
     face: {
       contour: "square",
       window: "two",
-      door: "center",
+      door: "none",
       lightShape: "round",
       lightPos: "mid",
       sign: "top",

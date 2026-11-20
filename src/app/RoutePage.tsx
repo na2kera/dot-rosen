@@ -156,7 +156,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
       <div className="route-page__actions">
         <ImageSaver card={card && !("error" in card) ? card.color : null} routeName={v.data.name} />
         {owner && (
-          <Button variant="primary" block onClick={edit}>
+          <Button variant="primary" block onClick={edit} disabled={pub.deleting}>
             編集する
           </Button>
         )}

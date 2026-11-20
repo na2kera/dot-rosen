@@ -470,3 +470,144 @@ describe("#8 設定の取得が複数回時間切れ", () => {
     expect(await loader.load()).toEqual({ card: { monoSet: "bold", sideLayout: "two-x2-rotated" } });
   });
 });
+
+describe("削除と保存・印刷の競合（Issue #1 の Codex レビュー D1〜D3）", () => {
+  const deletes = (s: ReturnType<typeof fakeServer>) => s.calls.filter((c) => c.method === "DELETE");
+  const routePosts = (s: ReturnType<typeof fakeServer>) => s.calls.filter((c) => c.method === "POST" && c.path === "/api/routes");
+
+  it("D1: 削除の応答が遅れている間に別タブが新しい路線を作っても、遅れた応答はその新しい路線の記録を消さない", async () => {
+    const server = fakeServer();
+    const storage = memoryStorage();
+    const tab1 = tab(server, storage);
+    const tab2 = tab(server, storage);
+    await tab1.save(data("A線"));
+    const idA = tab1.store.get().saved!.id!;
+    const release = server.hold();
+    const deleting = tab1.deleteRoute(idA);
+    await vi.advanceTimersByTimeAsync(0);
+    // サーバーでは A はもう消えている。別タブの保存は PUT 404 → 新しく B を作る
+    expect(await tab2.save(data("B線"))).toBe(true);
+    const recB = readSaved(storage)!;
+    expect(recB.id).not.toBe(idA);
+    release();
+    expect((await deleting).ok).toBe(true);
+    // B の鍵と記録は残る
+    expect(readSaved(storage)).toEqual(recB);
+    expect(tab1.store.get().saved?.id).toBe(recB.id);
+  });
+
+  it("D1: 削除の応答が遅れている間に、同じ画面で保存しても通信しない", async () => {
+    const { server, p } = setup();
+    await p.save(data("A線"));
+    const idA = p.store.get().saved!.id!;
+    const release = server.hold();
+    const deleting = p.deleteRoute(idA);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.store.get().deleting).toBe(true);
+    const n = server.calls.length;
+    expect(await p.save(data("B線"))).toBe(false);
+    expect(await p.requestPrint(data("B線"), "CODE1")).toBe(false);
+    expect(server.calls.length).toBe(n);
+    release();
+    expect((await deleting).ok).toBe(true);
+    expect(p.store.get().deleting).toBe(false);
+    expect(p.store.get().saved).toBeNull();
+    expect(server.routes.size).toBe(0);
+  });
+
+  it("D1: 削除で消す印刷の記録は、消した路線のものだけ", async () => {
+    const server = fakeServer();
+    const storage = memoryStorage();
+    const tab1 = tab(server, storage);
+    const tab2 = tab(server, storage);
+    await tab1.save(data("A線"));
+    const idA = tab1.store.get().saved!.id!;
+    const release = server.hold();
+    const deleting = tab1.deleteRoute(idA);
+    await vi.advanceTimersByTimeAsync(0);
+    // 別タブが新しい路線 B を作って印刷を申し込む
+    expect(await tab2.requestPrint(data("B線"), "CODE1")).toBe(true);
+    const printB = readPrint(storage)!;
+    expect(printB.routeId).not.toBe(idA);
+    release();
+    await deleting;
+    expect(readPrint(storage)).toEqual(printB);
+    tab2.stopPolling();
+  });
+
+  it("D2: 印刷の申し込みが進行中は、削除は通信せずに断る", async () => {
+    const { server, p } = setup();
+    await p.save(data());
+    const id = p.store.get().saved!.id!;
+    const release = server.hold();
+    const printing = p.requestPrint(data(), "CODE1");
+    await vi.advanceTimersByTimeAsync(0);
+    const r = await p.deleteRoute(id);
+    expect(r.ok).toBe(false);
+    expect(deletes(server)).toHaveLength(0);
+    release();
+    expect(await printing).toBe(true);
+    expect(server.routes.has(id)).toBe(true);
+    p.stopPolling();
+  });
+
+  it("D2: 保存が進行中は、削除は通信せずに断る", async () => {
+    const { server, p } = setup();
+    await p.save(data());
+    const id = p.store.get().saved!.id!;
+    const release = server.hold();
+    const saving = p.save(data("変えた線"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await p.deleteRoute(id)).ok).toBe(false);
+    expect(deletes(server)).toHaveLength(0);
+    release();
+    expect(await saving).toBe(true);
+  });
+
+  it("D2: 路線が別の所で消されたあとに stale が返っても、路線を自動で作り直さない", async () => {
+    const { server, p } = setup();
+    await p.save(data());
+    const id = p.store.get().saved!.id!;
+    // 申し込みが届く直前に、路線が別の所で消された（応答は stale）
+    server.override(() => {
+      server.routes.delete(id);
+      return server.json(409, { error: "stale" });
+    });
+    const posts = routePosts(server).length;
+    expect(await p.requestPrint(data(), "CODE1")).toBe(false);
+    expect(routePosts(server)).toHaveLength(posts);
+    expect(server.routes.size).toBe(0);
+    expect(p.store.get().printError?.code).toBe("not_found");
+    expect(p.store.get().print).toBeNull();
+  });
+
+  it("D3: 削除の応答を受け取れなかったら、保存ずみにしない（鍵と id は残す。保存しなおすと新しく作る）", async () => {
+    const { server, storage, p } = setup();
+    await p.save(data());
+    const rec = readSaved(storage)!;
+    server.failOnce();
+    const r = await p.deleteRoute(rec.id!);
+    expect(r.ok).toBe(false);
+    expect(server.routes.size).toBe(0);
+    const after = readSaved(storage)!;
+    expect(after.id).toBe(rec.id);
+    expect(after.editKey).toBe(rec.editKey);
+    expect(after.savedRev).toBeNull();
+    expect(p.isSaved(data())).toBe(false);
+    expect(p.saveStatus(data())).toBe("dirty");
+    // 保存しなおす（利用者の操作）→ PUT 404 → 新しく作る
+    expect(await p.save(data())).toBe(true);
+    expect(server.routes.size).toBe(1);
+    expect(p.store.get().saved!.id).not.toBe(rec.id);
+  });
+
+  it("D3: 削除がはっきり断られたら、元の保存ずみに戻す", async () => {
+    const { server, storage, p } = setup();
+    await p.save(data());
+    const rec = readSaved(storage)!;
+    server.override(() => server.json(429, { error: "rate_limited" }));
+    expect((await p.deleteRoute(rec.id!)).ok).toBe(false);
+    expect(readSaved(storage)).toEqual(rec);
+    expect(p.saveStatus(data())).toBe("clean");
+  });
+});

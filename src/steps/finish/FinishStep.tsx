@@ -155,14 +155,14 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
             {saved && <p className="save__dirty">変更があります。保存しなおすと、同じ URL の中身が新しくなります</p>}
             {!saved && <p className="save__note">この URL を知っている人は誰でも見られます</p>}
             {mode !== "ok" && <p className="text-alert">この端末には保存できないため、URL を作れません（プライベートモードや空き容量を確かめてね）</p>}
-            <Button variant="primary" block icon="save" onClick={onSave} disabled={!data} aria-busy={pub.saving}>
+            <Button variant="primary" block icon="save" onClick={onSave} disabled={!data || pub.deleting} aria-busy={pub.saving}>
               {pub.saving ? "保存しています…" : saved ? "保存しなおす" : "保存して URL をつくる"}
             </Button>
           </>
         )}
         {pub.saveError && !pub.saving && !(pub.saveError.code === "storage" && mode !== "ok") && <p className="text-alert">{errorMessage(pub.saveError)}</p>}
         {/* 保存ずみのときだけ、目立たないように小さく置く。消すと未保存に戻る（作りかけは残る） */}
-        {saved && !pub.saving && <DeleteRouteButton id={saved.id!} className="save__delete" />}
+        {saved && <DeleteRouteButton id={saved.id!} className="save__delete" />}
       </div>
     </Panel>
   );
@@ -265,7 +265,7 @@ function PrintPanel({ data, pub }: { data: RouteData | null; pub: PublishState }
       {(canRequest || unknown) && code && (
         <>
           {!pub.requesting && data && !publish.isSaved(data) && !unknown && <p className="text-weak">押すと、先に路線を保存してから申し込みます</p>}
-          <Button variant="primary" block icon="print" onClick={start} disabled={!data || pub.requesting}>
+          <Button variant="primary" block icon="print" onClick={start} disabled={!data || pub.requesting || pub.deleting}>
             {pub.requesting ? "申し込んでいます…" : unknown ? "もういちど送る" : rec && isTerminal(rec.status) ? "もういちど申し込む" : "印刷する"}
           </Button>
           <p className="text-weak print__note">印刷は 1台の端末につき 1回までです</p>

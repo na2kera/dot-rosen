@@ -59,6 +59,8 @@ export type PublishState = {
   readonly printError: ApiFailure | null;
   /** 状態の問い合わせが通信に失敗している */
   readonly pollFailing: boolean;
+  /** 路線を消す通信の途中（保存・印刷の申し込みと同時には行わない） */
+  readonly deleting: boolean;
 };
 
 /** 問い合わせの間隔（ミリ秒）。前が少ないときは短く、多いときは長く */
@@ -200,6 +202,7 @@ export function createPublishStore(deps: PublishDeps) {
     requesting: false,
     printError: null,
     pollFailing: false,
+    deleting: false,
   });
   const patch = (p: Partial<PublishState>) => store.set((s) => ({ ...s, ...p }));
 
@@ -231,6 +234,8 @@ export function createPublishStore(deps: PublishDeps) {
   // ---- 保存 ----
 
   let saving: Promise<boolean> | null = null;
+  /** 路線を消す通信の途中か（deleteRoute） */
+  let deleting = false;
 
   /** 鍵の路線がもう使えない（消された・非公開・鍵違い） */
   const isGone = (f: ApiFailure) => f.code === "not_found" || f.code === "forbidden";
@@ -302,7 +307,19 @@ export function createPublishStore(deps: PublishDeps) {
     return false;
   }
 
-  async function doSave(data: RouteData): Promise<boolean> {
+  /**
+   * 新しく作る（POST）ことになる保存を、作らずに止める（allowCreate = false のとき）。
+   * 路線が消されている（404・403）ことが分かったので、そのまま「路線が見つかりません」を出す
+   */
+  function refuseCreate(id: string | null): boolean {
+    const fresh = readSaved(storage);
+    if (fresh && fresh.id === id && fresh.pending !== null) writeSaved({ ...fresh, pending: null });
+    patch({ saveError: { ok: false, code: "not_found", status: 404 } });
+    return false;
+  }
+
+  /** allowCreate が false なら、新しい路線を作る（POST する）ことになる保存はしない（利用者が押していない保存のため） */
+  async function doSave(data: RouteData, allowCreate: boolean): Promise<boolean> {
     const json = routeJson(data);
     patch({ saving: true, saveError: null });
     try {
@@ -312,10 +329,12 @@ export function createPublishStore(deps: PublishDeps) {
         if (rec.savedRev !== null && rec.savedJson === json) return true;
         const r = await put({ ...rec, id: rec.id }, data, json);
         if (r !== "gone") return r;
+        if (!allowCreate) return refuseCreate(rec.id);
         // 前の路線はもう使えないので、新しい鍵で作り直す（URL は変わる）
         writeSaved(null);
         return await post(data, json);
       }
+      if (!allowCreate) return refuseCreate(null);
       if (await post(data, json)) return true;
       const err = store.get().saveError;
       if (err && isGone(err)) {
@@ -347,12 +366,15 @@ export function createPublishStore(deps: PublishDeps) {
    * 保存する（新規は POST、2回目以降は PUT）。
    * 保存中に呼ばれたら、その保存が終わるのを待ってから、頼まれた内容が保存ずみかを確かめ、違えば保存し直す。
    */
-  async function save(data: RouteData): Promise<boolean> {
+  async function save(data: RouteData, allowCreate = true): Promise<boolean> {
+    // 路線を消している途中は保存しない（消した路線の応答と入れ違いにならないよう）
+    if (deleting) return false;
     while (saving) await saving;
+    if (deleting) return false;
     // ほかのタブの保存（結果不明を含む）を拾う
     refreshSaved();
     if (isSaved(data)) return true;
-    const p = doSave(data).finally(() => {
+    const p = doSave(data, allowCreate).finally(() => {
       if (saving === p) saving = null;
     });
     saving = p;
@@ -441,6 +463,8 @@ export function createPublishStore(deps: PublishDeps) {
   // ---- 印刷の申し込み ----
 
   let requesting = false;
+  /** 印刷の申し込みの世代。路線を消し始めたら進め、それより前の申し込みの応答では記録を変えず、送り直しもしない */
+  let printGen = 0;
 
   /** 申し込みを送る（409 conflict = 画像の準備中なら、少し待って同じ本文で送り直す） */
   async function send(rec: PrintRecord & { rev: string }) {
@@ -487,8 +511,8 @@ export function createPublishStore(deps: PublishDeps) {
   }
 
   /** いまの内容を保存ずみにする（進行中の保存は待つ）。できなければ理由を出して false */
-  async function ensureSaved(data: RouteData): Promise<boolean> {
-    const ok = await save(data);
+  async function ensureSaved(data: RouteData, allowCreate = true): Promise<boolean> {
+    const ok = await save(data, allowCreate);
     if (ok && isSaved(data)) return true;
     patch({ printError: store.get().saveError ?? storageFailure() });
     return false;
@@ -527,16 +551,23 @@ export function createPublishStore(deps: PublishDeps) {
    * 送って結果を記録する。409 stale（保存されている内容が申し込みの版と違う。印刷は作られていない）なら、
    * 保存状態を結果不明にして今の内容を保存し直し、新しい requestId と新しい rev で1回だけ申し込み直す
    */
-  async function sendAndSettle(rec: PrintRecord & { rev: string }, data: RouteData, eventCode: string): Promise<boolean> {
+  async function sendAndSettle(rec: PrintRecord & { rev: string }, data: RouteData, eventCode: string, gen: number): Promise<boolean> {
     const r = await send(rec);
+    // 送っている間に路線を消し始めた: 古い応答で記録を変えず、送り直さない
+    if (gen !== printGen) return false;
     if (r.ok || r.code !== "stale") return settle(rec, r);
     writePrint(rec.prev);
     markUnknown(rec.routeId);
-    if (!(await ensureSaved(data))) return false;
+    // 申し込み直しのための保存は、押した路線の上書きだけ。路線が消されていたら新しく作らずに止める
+    // （消した路線を、利用者の操作なしに作り直さない）
+    if (!(await ensureSaved(data, false))) return false;
+    if (gen !== printGen) return false;
     const again = newRecord(data, eventCode, rec.prev);
     if (!persist(again, rec.prev)) return false;
+    const r2 = await send(again);
+    if (gen !== printGen) return false;
     // それも stale なら、はっきり断られた扱い（前の記録に戻してエラーを出す）
-    return settle(again, await send(again));
+    return settle(again, r2);
   }
 
   /**
@@ -547,7 +578,9 @@ export function createPublishStore(deps: PublishDeps) {
    * - 申し込む前に記録を端末に書く。書けなければ申し込まない
    */
   async function requestPrint(data: RouteData, eventCode: string): Promise<boolean> {
-    if (requesting) return false;
+    // 路線を消している途中は申し込まない
+    if (requesting || deleting) return false;
+    const gen = printGen;
     requesting = true;
     patch({ requesting: true, printError: null });
     try {
@@ -564,12 +597,12 @@ export function createPublishStore(deps: PublishDeps) {
           rec = { ...rec, rev: store.get().saved!.savedRev };
         }
         if (!persist(rec, prev)) return false;
-        return await sendAndSettle(rec as PrintRecord & { rev: string }, data, eventCode);
+        return await sendAndSettle(rec as PrintRecord & { rev: string }, data, eventCode, gen);
       }
       if (!(await ensureSaved(data))) return false;
       const rec = newRecord(data, eventCode, prev && prev.jobId !== null ? { ...prev, prev: null } : null);
       if (!persist(rec, prev)) return false;
-      return await sendAndSettle(rec, data, eventCode);
+      return await sendAndSettle(rec, data, eventCode, gen);
     } finally {
       requesting = false;
       patch({ requesting: false });
@@ -618,18 +651,61 @@ export function createPublishStore(deps: PublishDeps) {
     patch({ saveError: null, printError: null, pollFailing: false });
   }
 
-  /** サーバーの路線を消す（この端末が鍵を持っているときだけ） */
+  /**
+   * 消した路線の記録だけを消す。端末の最新の記録を読み直し、id と鍵が消した路線と同じときだけ消す
+   * （応答が遅れている間に、ほかのタブが別の路線を保存・印刷していたら、そちらは残す）
+   */
+  function forgetRoute(id: string, editKey: string): void {
+    const fresh = readSaved(storage);
+    if (fresh && fresh.id === id && fresh.editKey === editKey) {
+      writeSaved(null);
+      patch({ saveError: null });
+    } else patch({ saved: fresh });
+    const print = readPrint(storage) ?? store.get().print;
+    if (print && print.routeId === id) {
+      stopPolling();
+      writePrint(null);
+      patch({ printError: null, pollFailing: false });
+    } else if (print) patch({ print });
+  }
+
+  /**
+   * サーバーの路線を消す（この端末が鍵を持っているときだけ）。
+   * 保存・印刷の申し込みの途中は通信せずに断る（409 conflict 扱い）。
+   * 送る前に端末の保存状態を結果不明にして書く（鍵と id は残す）。成功か 404 なら消した路線の記録を消し、
+   * 通信の失敗・サーバーの問題なら結果不明のまま、はっきり断られたら元に戻す
+   */
   async function deleteRoute(id: string): Promise<{ ok: true } | ApiFailure> {
+    if (deleting || saving || requesting) return { ok: false, code: "conflict", status: 0 };
     refreshSaved();
     const rec = store.get().saved;
     if (!rec || rec.id !== id) return { ok: false, code: "forbidden", status: 0 };
-    const r = await api.deleteRoute(id, rec.editKey);
-    // すでに無いなら、端末の情報だけ消す
-    if (r.ok || r.code === "not_found") {
-      forget();
-      return { ok: true };
+    deleting = true;
+    // それより前の印刷の申し込みの応答では、記録を変えない
+    printGen++;
+    patch({ deleting: true });
+    try {
+      const token = randomToken(random);
+      if (!writeSaved({ ...rec, savedJson: null, savedRev: null, pending: token })) {
+        writeSaved(rec);
+        return storageFailure();
+      }
+      const r = await api.deleteRoute(id, rec.editKey);
+      // すでに無いなら、端末の情報だけ消す
+      if (r.ok || r.code === "not_found") {
+        forgetRoute(id, rec.editKey);
+        return { ok: true };
+      }
+      const fresh = readSaved(storage);
+      if (fresh?.pending === token) {
+        // 通信の失敗・サーバーの問題は結果不明のまま（保存しなおすと送り直す）。はっきり断られたなら元に戻す
+        writeSaved(r.code === "network" || r.code === "internal" ? { ...fresh, pending: null } : rec);
+      } else patch({ saved: fresh });
+      return r;
+    } finally {
+      deleting = false;
+      patch({ deleting: false });
     }
-    return r;
   }
 
   /**

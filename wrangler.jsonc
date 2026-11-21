@@ -10,10 +10,12 @@
   "routes": [{ "pattern": "dot-rosen.na2kera.com", "custom_domain": true }],
   "workers_dev": true,
   "assets": {
+    // Worker から静的ファイルを読む（路線のページへの題と絵の差し込み）
+    "binding": "ASSETS",
     // 見つからないパスは index.html を返す（SPA）
     "not_found_handling": "single-page-application",
-    // /api/* は静的ファイルより先に Worker が処理する
-    "run_worker_first": ["/api/*"]
+    // /api/*・/r/*（路線のページ）・/og/*（X 用の絵）は静的ファイルより先に Worker が処理する
+    "run_worker_first": ["/api/*", "/r/*", "/og/*"]
   },
   "d1_databases": [
     {

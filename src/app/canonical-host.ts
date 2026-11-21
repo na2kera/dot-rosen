@@ -2,8 +2,11 @@
 // 会場の QR コードと路線カードの QR コードには「そのとき開いていたドメイン」の URL が入るので、
 // URL が 2 種類に混ざらないよう、画面は独自ドメインに寄せる。API（/api/*）はどちらのドメインでも動く。
 
+import { CANONICAL_ORIGIN } from "../../shared/site.ts";
+
+export { CANONICAL_ORIGIN };
+
 const OLD_HOST = "dot-rosen.na2kera.workers.dev";
-const CANONICAL_ORIGIN = "https://dot-rosen.na2kera.com";
 
 /** 移す先の URL。移す必要が無ければ null。パス・クエリ（会場コードを含む）・ハッシュはそのまま持っていく */
 export function canonicalUrl(href: string): string | null {

@@ -19,6 +19,11 @@
   touch-action: manipulation;
 }
 
+/* リンクのボタン（「X で共有」）。見た目はボタンと同じにする */
+a.btn {
+  text-decoration: none;
+}
+
 .btn:active:not(:disabled):not([aria-disabled="true"]),
 .btn[data-pressed="true"] {
   box-shadow: none;

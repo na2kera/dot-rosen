@@ -1,4 +1,4 @@
-// 路線のページ（/r/:id）。見るだけ。この端末が編集の鍵を持っていれば「編集する」「この路線を消す」も出す。
+// 路線のページ（/r/:id）。見るだけ。この端末が編集の鍵を持っていれば「編集する」「X で共有」「この路線を消す」も出す。
 import { useCallback, useEffect, useState } from "react";
 import { parseStations, STATIONS_PATH, type StationsFile } from "../../shared/geo/map-data.ts";
 import { parseRouteData, type RouteData } from "../../shared/route/index.ts";
@@ -8,6 +8,8 @@ import { ImageSaver } from "../card/ImageSaver.tsx";
 import { useBitmapFont, useCard, useServerCardLook } from "../card/useCard.ts";
 import { buildStationIndex, type StationIndex } from "../data/station-index.ts";
 import { navigate } from "../router.ts";
+import { xShareHref } from "../share/x-share.ts";
+import { XShareButton } from "../share/XShareButton.tsx";
 import { browserStorage } from "../store/browser.ts";
 import { safeGet, STORAGE_KEYS } from "../store/kv-storage.ts";
 import { restoreDraft, writeDraft } from "../store/route-store.ts";
@@ -93,7 +95,7 @@ function Message({ heading, children, onRetry }: { heading: string; children: Re
           {children}
           {onRetry && <Button onClick={onRetry}>もういちど よみこむ</Button>}
           <Button variant="primary" onClick={() => navigate("/")}>
-            自分も作ってみる
+            オリジナル路線を作る
           </Button>
         </div>
       </Panel>
@@ -141,6 +143,14 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
     navigate("/");
   }, [id, v, publish]);
 
+  const imageSaver = <ImageSaver card={card && !("error" in card) ? card.color : null} routeName={v.data.name} />;
+  // 作った本人以外（X から来た人など）には、これを主ボタンにしていちばん上に置く
+  const makeOwn = (
+    <Button variant={owner ? "normal" : "primary"} block onClick={() => navigate("/")}>
+      オリジナル路線を作る
+    </Button>
+  );
+
   return (
     <div className="app__scroll route-page">
       <div className="route-page__card">
@@ -154,16 +164,23 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
         )}
       </div>
       <div className="route-page__actions">
-        <ImageSaver card={card && !("error" in card) ? card.color : null} routeName={v.data.name} />
-        {owner && (
-          <Button variant="primary" block onClick={edit} disabled={pub.deleting}>
-            編集する
-          </Button>
+        {owner ? (
+          <>
+            <Button variant="primary" block onClick={edit} disabled={pub.deleting}>
+              編集する
+            </Button>
+            {/* 名前も v も、このページが読んだもの（表示中の名前と別の版の rev を組み合わせない） */}
+            {v.rev && <XShareButton href={xShareHref({ id, rev: v.rev, name: v.data.name })} />}
+            {imageSaver}
+            {makeOwn}
+            <DeleteRouteButton id={id} block onDeleted={onDeleted} />
+          </>
+        ) : (
+          <>
+            {makeOwn}
+            {imageSaver}
+          </>
         )}
-        <Button block onClick={() => navigate("/")}>
-          自分も作ってみる
-        </Button>
-        {owner && <DeleteRouteButton id={id} block onDeleted={onDeleted} />}
       </div>
     </div>
   );

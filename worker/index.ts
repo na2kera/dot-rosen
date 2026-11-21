@@ -1,4 +1,4 @@
-// Cloudflare Worker の入口。/api/* だけがここに来る（それ以外は静的ファイル）。
+// Cloudflare Worker の入口。/api/*（API）と、/r/*（路線のページ）・/og/*（X 用の絵）がここに来る（それ以外は静的ファイル）。
 //
 // 駅データとフォントは Worker に同梱する（静的アセットから読むと、リクエストのたびに取得と解析が要るため）。
 // JSON は Vite がモジュールとして取り込み、.bin は Data モジュール（ArrayBuffer）になる。
@@ -10,6 +10,7 @@ import type { StationsFile } from "../shared/geo/map-data.ts";
 import { createApp } from "./app.ts";
 import { cleanup } from "./lib/cleanup.ts";
 import { cardOptions } from "./lib/config.ts";
+import { handlePage } from "./pages.ts";
 import { createResources } from "./lib/resources.ts";
 import type { Bindings } from "./lib/types.ts";
 import { warmUpCard } from "./lib/warmup.ts";
@@ -31,7 +32,18 @@ try {
 }
 
 export default {
-  fetch: (request, env, ctx) => app.fetch(request, env as Bindings, ctx),
+  async fetch(request, env, ctx) {
+    // 路線のページと X 用の絵は API とは別に処理する（API の no-store と JSON の 404 を掛けない）
+    const page = await handlePage(request, {
+      resources,
+      assets: env.ASSETS,
+      db: (env as unknown as Bindings).DB,
+      cache: caches.default,
+      waitUntil: (p) => ctx.waitUntil(p),
+    });
+    if (page) return page;
+    return app.fetch(request, env as Bindings, ctx);
+  },
   async scheduled(_controller, env) {
     const r = await cleanup((env as Bindings).DB, new Date());
     console.log("掃除", r);

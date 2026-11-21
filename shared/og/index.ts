@@ -6,7 +6,7 @@ import { textWidth, drawTextScaled, ellipsize } from "../card/text.ts";
 import { hasGlyph, type BitmapFont } from "../font/index.ts";
 import { blit, createIndexed, encodeIndexedPngAsync, fillRect, type IndexedImage, type Palette, type Rgba } from "../pix/index.ts";
 import { MAX_CARS, MIN_CARS, routeSectionLabel, type RouteData, type StationLookup } from "../route/index.ts";
-import { CAR_RAIL_Y, CAR_W, FACE_RAIL_Y, renderConsist, renderFace, stampLogo, tones, TRAIN_PALETTE } from "../train/index.ts";
+import { CAR_RAIL_Y, CAR_W, FACE_H, FACE_RAIL_Y, renderConsist, renderFace, stampLogo, tones, TRAIN_PALETTE } from "../train/index.ts";
 
 /** ドット絵の大きさ（書き出しはこの 2 倍） */
 export const OG_W = 600;
@@ -50,11 +50,12 @@ const LOGO_BOX = 16 * LOGO_SCALE + 4;
 /** 台紙（角を段にする） */
 const MOUNT_X = 32;
 const MOUNT_W = OG_W - MOUNT_X * 2;
-const MOUNT_Y = 68;
-const MOUNT_H = 158;
+const MOUNT_Y = 64;
+const MOUNT_H = 164;
 const FACE_SCALE = 2;
 const FACE_X = MOUNT_X + 8;
-const FACE_Y = MOUNT_Y + 2;
+/** 正面の顔（パンタグラフを含めて 76 ドット × 2 倍）を、台紙の上下に 6 ドットずつ空けて収める */
+const FACE_Y = MOUNT_Y + Math.floor((MOUNT_H - FACE_H * FACE_SCALE) / 2);
 /** 編成を置く範囲 */
 const CONSIST_X0 = FACE_X + 64 * FACE_SCALE + 8;
 const CONSIST_X1 = MOUNT_X + MOUNT_W - 4;

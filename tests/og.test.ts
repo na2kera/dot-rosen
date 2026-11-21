@@ -106,6 +106,18 @@ describe("X 用の絵", () => {
     }
   });
 
+  // 06-1car は屋根にパンタグラフのある顔、08-dark は無い顔
+  it("正面の顔（パンタグラフを含む）は台紙の中に、上端から 6 ドット以上空けて収まる", () => {
+    for (const f of fixtures) {
+      const img = renderRouteOg({ route: f.route, lookup: kit.lookup, font: kit.font });
+      // 顔の列（40〜168）で、台紙（紙の色 242）の上端と、電車の色番号（0〜207）が最初に出る行
+      const col = (y: number) => Array.from({ length: 128 }, (_, i) => img.data[y * OG_W + 40 + i]);
+      const mountTop = Array.from({ length: OG_H }, (_, y) => y).find((y) => col(y).every((v) => v === 242 || v < 208))!;
+      const trainTop = Array.from({ length: OG_H }, (_, y) => y).find((y) => col(y).some((v) => v < 208))!;
+      expect(trainTop - mountTop, f.id).toBeGreaterThanOrEqual(6);
+    }
+  });
+
   it("おかしな入力（駅が引けない、絵文字だけの名前、最大両数、両数の範囲外、32 文字の名前）でも投げない", async () => {
     const base = fixtures.find((f) => f.id === "04-30st-max")!.route;
     const cases: RouteData[] = [

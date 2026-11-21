@@ -14,7 +14,7 @@ import { getEventCode } from "../../store/device.ts";
 import { isTerminal, PRINT_RECORD_REASON, type PublishState } from "../../store/publish-store.ts";
 import { routeErrorStep, routeErrorText } from "../../store/route-errors.ts";
 import { useStore } from "../../store/use-store.ts";
-import { xShareHref } from "../../share/x-share.ts";
+import { finishXShare } from "../../share/x-share.ts";
 import { XShareButton } from "../../share/XShareButton.tsx";
 import { Button } from "../../ui/Button.tsx";
 import { Panel } from "../../ui/Panel.tsx";
@@ -126,8 +126,8 @@ function SavePanel({ data, pub }: { data: RouteData | null; pub: PublishState })
   };
 
   // X で共有できるのは、いまの内容が保存ずみで、その版の印が分かっているときだけ（名前は画面のデータ、v は保存記録の rev）
-  const xHref = clean && saved?.savedRev && data ? xShareHref({ id: saved.id!, rev: saved.savedRev, name: data.name }) : null;
-  const xShare = <XShareButton href={xHref} reason={saved ? "保存しなおすと、X で共有できます" : "URL をつくると、X で共有できます"} />;
+  const x = finishXShare({ status, saved: pub.saved, name: data?.name ?? null });
+  const xShare = <XShareButton href={x.href} reason={x.reason ?? undefined} />;
 
   return (
     <Panel title="保存して URL をつくる">

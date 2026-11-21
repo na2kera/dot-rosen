@@ -38,9 +38,16 @@ export const OG_MAX_AGE = 300;
 /** /r/* と /og/* なら応答を返す。それ以外は null（API へ回す） */
 export async function handlePage(request: Request, deps: PageDeps): Promise<Response | null> {
   const path = new URL(request.url).pathname;
-  if (path.startsWith("/r/")) return routePage(request, path, deps);
-  if (path.startsWith("/og/")) return ogImage(request, path, deps);
-  return null;
+  const isRoute = path.startsWith("/r/");
+  if (!isRoute && !path.startsWith("/og/")) return null;
+  try {
+    return await (isRoute ? routePage(request, path, deps) : ogImage(request, path, deps));
+  } catch (e) {
+    // 中で捕まえきれなかった失敗（静的ファイルの取得そのものの失敗など）でも 500 にしない。
+    // /r/* は受け取ったリクエストをそのまま静的ファイルへ（これも失敗したら投げる）、/og/* は共通の絵へ
+    console.warn("路線のページ・X 用の絵の処理に失敗", e instanceof Error ? e.message : String(e));
+    return isRoute ? deps.assets.fetch(request) : fallback(request);
+  }
 }
 
 /** 打ち切り。負けた Promise があとで失敗しても未処理にしない */
@@ -143,13 +150,15 @@ async function ogImage(request: Request, path: string, deps: PageDeps): Promise<
     // 鍵は今の rev で正規化する（リクエストのクエリは使わない）
     const key = new URL(`/og/${id}.png?v=${revTag(found.rev)}`, request.url).toString();
     const cache = deps.cache ?? null;
-    const hit = cache ? await cache.match(key).catch(() => undefined) : undefined;
+    // キャッシュの失敗（同期で投げる場合も）は、無いものとして描く
+    const hit = cache ? await (async () => cache.match(key))().catch(() => undefined) : undefined;
     if (hit) return forMethod(request, hit);
     const png = await (deps.renderOg ?? routeOgPng)({ route: found.route, lookup: deps.resources.lookup, font: deps.resources.font });
     const headers = { "Content-Type": "image/png", "Cache-Control": `public, max-age=${OG_MAX_AGE}` };
     const res = new Response(png as Uint8Array<ArrayBuffer>, { status: 200, headers });
     if (cache) {
-      const put = cache.put(key, res.clone()).catch(() => {});
+      const copy = res.clone();
+      const put = (async () => cache.put(key, copy))().catch(() => {});
       if (deps.waitUntil) deps.waitUntil(put);
       else await put;
     }

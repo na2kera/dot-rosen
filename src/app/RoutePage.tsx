@@ -8,7 +8,7 @@ import { ImageSaver } from "../card/ImageSaver.tsx";
 import { useBitmapFont, useCard, useServerCardLook } from "../card/useCard.ts";
 import { buildStationIndex, type StationIndex } from "../data/station-index.ts";
 import { navigate } from "../router.ts";
-import { xShareHref } from "../share/x-share.ts";
+import { routeXShare } from "../share/x-share.ts";
 import { XShareButton } from "../share/XShareButton.tsx";
 import { browserStorage } from "../store/browser.ts";
 import { safeGet, STORAGE_KEYS } from "../store/kv-storage.ts";
@@ -143,6 +143,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
     navigate("/");
   }, [id, v, publish]);
 
+  const xHref = routeXShare({ owner, id, loaded: v });
   const imageSaver = <ImageSaver card={card && !("error" in card) ? card.color : null} routeName={v.data.name} />;
   // 作った本人以外（X から来た人など）には、これを主ボタンにしていちばん上に置く
   const makeOwn = (
@@ -170,7 +171,7 @@ function RouteView({ id, v, onDeleted }: { id: string; v: Loaded; onDeleted(): v
               編集する
             </Button>
             {/* 名前も v も、このページが読んだもの（表示中の名前と別の版の rev を組み合わせない） */}
-            {v.rev && <XShareButton href={xShareHref({ id, rev: v.rev, name: v.data.name })} />}
+            {xHref && <XShareButton href={xHref} />}
             {imageSaver}
             {makeOwn}
             <DeleteRouteButton id={id} block onDeleted={onDeleted} />

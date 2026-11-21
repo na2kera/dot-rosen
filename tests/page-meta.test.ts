@@ -69,14 +69,51 @@ describe("路線のページへの差し込み", () => {
     expect(injectRouteMeta(plain, meta("x"))).toBe(plain);
   });
 
-  it("ビルドした index.html（あれば）でも、すべての項目が置き換わる", () => {
-    const built = path.join(ROOT, "dist/client/index.html");
-    if (!fs.existsSync(built)) return;
-    const html = fs.readFileSync(built, "utf8");
-    const out = injectRouteMeta(html, meta("みどり線"));
-    expect(out).toContain("<title>みどり線｜ドット路線メーカー</title>");
-    for (const k of ["og:title", "twitter:title"]) expect(content(out, k)).toEqual(["みどり線｜ドット路線メーカー"]);
-    for (const k of ["og:image", "twitter:image"]) expect(content(out, k)).toEqual([meta("x").image]);
-    for (const k of ["description", "og:description", "twitter:description", "og:url", "og:image:alt"]) expect(content(out, k)).toHaveLength(1);
+  it("ソースの index.html で、10 項目すべてが期待どおりの値に置き換わる", () => {
+    const m = meta("みどり線");
+    const out = injectRouteMeta(HTML, m);
+    expect(mismatches(out, m)).toEqual([]);
+    // 置き換え前の値とは違う（同じ値のまま通っていない）
+    for (const [key] of ITEMS) expect(read(out, key), key).not.toBe(read(HTML, key));
+  });
+
+  it("置き換わらなかった項目があれば分かる（index.html の形が変わったら落ちる）", () => {
+    const m = meta("みどり線");
+    // 形を変えた HTML（title に属性、og:url の属性の順が逆、twitter:image を消す）では、その項目が報告される
+    const changed = HTML.replace("<title>", '<title data-x="1">')
+      .replace(/<meta property="og:url" content="([^"]*)"/, '<meta content="$1" property="og:url"')
+      .replace(/\s*<meta name="twitter:image"[^>]*>/, "");
+    expect(mismatches(injectRouteMeta(changed, m), m).sort()).toEqual(["og:url", "title", "twitter:image"]);
+  });
+
+  it.runIf(fs.existsSync(path.join(ROOT, "dist/client/index.html")))("ビルドした index.html でも、10 項目すべてが置き換わる", () => {
+    const html = fs.readFileSync(path.join(ROOT, "dist/client/index.html"), "utf8");
+    const m = meta("みどり線");
+    expect(mismatches(injectRouteMeta(html, m), m)).toEqual([]);
   });
 });
+
+/** 置き換える 10 項目と、RouteMeta のどの値が入るか */
+const ITEMS: [string, keyof RouteMeta][] = [
+  ["title", "title"],
+  ["og:title", "title"],
+  ["twitter:title", "title"],
+  ["description", "description"],
+  ["og:description", "description"],
+  ["twitter:description", "description"],
+  ["og:url", "url"],
+  ["og:image", "image"],
+  ["twitter:image", "image"],
+  ["og:image:alt", "imageAlt"],
+];
+
+/** 項目の値（エスケープを戻したもの）。1 つも無い・2 つ以上あるときは null */
+function read(html: string, key: string): string | null {
+  const vals = key === "title" ? [...html.matchAll(/<title>([^<]*)<\/title>/g)].map((m) => m[1]) : content(html, key);
+  return vals.length === 1 ? unescape(vals[0]) : null;
+}
+
+/** 期待した値になっていない項目の名前 */
+function mismatches(html: string, m: RouteMeta): string[] {
+  return ITEMS.filter(([key, field]) => read(html, key) !== m[field]).map(([key]) => key);
+}

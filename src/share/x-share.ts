@@ -25,3 +25,37 @@ export function xIntentUrl(text: string): string {
 export function xShareHref(route: { id: string; rev: string; name: string }): string {
   return xIntentUrl(xShareText(route.name, xShareRouteUrl(route.id, route.rev)));
 }
+
+/** 「X で共有」の状態。href が null なら押せない（reason を添える） */
+export type XShareState = { href: string | null; reason: string | null };
+
+export const X_REASON_UNSAVED = "URL をつくると、X で共有できます";
+export const X_REASON_DIRTY = "保存しなおすと、X で共有できます";
+
+/**
+ * 「できあがり」の「X で共有」。押せるのは、いまのデータの保存の状態が clean で、保存記録の rev が分かっているときだけ。
+ * 路線名は画面のデータ、v は保存記録の rev。
+ * - none（保存する前）: 押せない（URL をつくると…）
+ * - dirty（変更あり・保存の結果が分からない）や rev が無いとき: 押せない（保存しなおすと…）
+ */
+export function finishXShare(input: {
+  status: "none" | "clean" | "dirty";
+  saved: { id: string | null; savedRev: string | null } | null;
+  /** 画面のデータの路線名（データが検査に通らなければ null） */
+  name: string | null;
+}): XShareState {
+  const { status, saved, name } = input;
+  if (status === "none" || !saved?.id) return { href: null, reason: X_REASON_UNSAVED };
+  if (status === "clean" && saved.savedRev && name !== null) return { href: xShareHref({ id: saved.id, rev: saved.savedRev, name }), reason: null };
+  return { href: null, reason: X_REASON_DIRTY };
+}
+
+/**
+ * 路線のページの「X で共有」の行き先。持ち主（この端末の保存記録の id がページの id と同じ）のときだけ出す。
+ * 名前も v もページが読んだもの（同じ応答の data と rev の組）を使う。出さないときは null。
+ */
+export function routeXShare(input: { owner: boolean; id: string; loaded: { data: { name: string }; rev: string | null } }): string | null {
+  const { owner, id, loaded } = input;
+  if (!owner || !loaded.rev) return null;
+  return xShareHref({ id, rev: loaded.rev, name: loaded.data.name });
+}

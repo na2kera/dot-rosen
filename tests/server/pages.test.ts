@@ -267,3 +267,92 @@ describe("GET /og/:id.png", () => {
     }
   });
 });
+
+describe("キャッシュの失敗と、応答のあとの書き込み", () => {
+  it("waitUntil を渡すと、終わっていない cache.put を waitUntil に渡したまま PNG を返す", async () => {
+    const r = await createRoute(h);
+    const pending: Promise<unknown>[] = [];
+    let putCalled = false;
+    const cache: OgCache = {
+      match: async () => undefined,
+      put: () => {
+        putCalled = true;
+        return new Promise<void>(() => {}); // 終わらない
+      },
+    };
+    const res = (await get(`/og/${r.id}.png`, deps({ cache, waitUntil: (p) => pending.push(p) })))!;
+    expect(res.status).toBe(200);
+    checkPng(new Uint8Array(await res.arrayBuffer()));
+    expect(putCalled).toBe(true);
+    expect(pending).toHaveLength(1);
+    // 渡した Promise はまだ終わっていない
+    const state = await Promise.race([pending[0].then(() => "done"), new Promise((ok) => setTimeout(() => ok("pending"), 20))]);
+    expect(state).toBe("pending");
+  });
+
+  it("cache.match・cache.put が失敗しても（同期で投げても、reject でも）PNG を返す", async () => {
+    const r = await createRoute(h);
+    const boom = () => {
+      throw new Error("cache down");
+    };
+    const caches: OgCache[] = [
+      { match: boom, put: boom },
+      { match: () => Promise.reject(new Error("x")), put: () => Promise.reject(new Error("x")) },
+      { match: async () => undefined, put: () => Promise.reject(new Error("x")) },
+    ];
+    for (const [i, cache] of caches.entries()) {
+      for (const waitUntil of [undefined, (p: Promise<unknown>) => void p]) {
+        const res = (await get(`/og/${r.id}.png`, deps({ cache, waitUntil })))!;
+        expect(res.status, String(i)).toBe(200);
+        expect(res.headers.get("Content-Type")).toBe("image/png");
+        checkPng(new Uint8Array(await res.arrayBuffer()));
+      }
+    }
+  });
+});
+
+describe("捕まえきれなかった失敗でも 500 にしない", () => {
+  it("/r/*: 静的ファイルの取得が投げても、もう一度そのまま静的ファイルへ渡した応答を返す", async () => {
+    const r = await createRoute(h);
+    const seen: string[] = [];
+    let n = 0;
+    const assets: AssetFetcher = {
+      async fetch(input) {
+        const req = input instanceof Request ? input : new Request(input);
+        seen.push(new URL(req.url).pathname);
+        // 1 回目（/ の HTML）と 2 回目（そのまま渡す）は失敗、3 回目は返す
+        if (++n <= 2) throw new Error("assets down");
+        return new Response("plain", { status: 200, headers: { "Content-Type": "text/html" } });
+      },
+    };
+    const res = (await get(`/r/${r.id}`, deps({ assets })))!;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("plain");
+    expect(seen).toEqual(["/", `/r/${r.id}`, `/r/${r.id}`]);
+  });
+
+  it("/r/*: それも失敗したら投げる（従来どおり、Worker の失敗として扱う）", async () => {
+    const assets: AssetFetcher = {
+      fetch: async () => {
+        throw new Error("assets down");
+      },
+    };
+    await expect(get("/r/AAAAAAAAAAAAAAAA", deps({ assets }))).rejects.toThrow("assets down");
+  });
+
+  it("/og/*: 処理の中で投げても /og.png へ 302", async () => {
+    const r = await createRoute(h);
+    const req = new Request(`${ORIGIN}/og/${r.id}.png`);
+    // method を読むと投げるリクエスト（処理の入口より先の失敗の代わり）
+    const bad = new Proxy(req, {
+      get(t, p) {
+        if (p === "method") throw new Error("broken request");
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const res = (await handlePage(bad, deps()))!;
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe(`${ORIGIN}/og.png`);
+  });
+});

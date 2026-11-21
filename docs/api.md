@@ -221,6 +221,47 @@ ATOM Lite はメモリが小さく、プリンタへの転送も遅いので、�
 | `/r/:id` | 路線のページ（見るだけ。作った端末なら「編集する」を出す） |
 | `/admin` | 管理画面 |
 
+### 路線のページへの差し込みと、X 用の絵（Issue #4）
+
+X などのリンクの読み取り役は JavaScript を動かさないので、路線ごとの題と絵は Worker が HTML に差し込む。
+
+**設定**
+
+- `wrangler.jsonc` の `assets` に `"binding": "ASSETS"` を足し、`run_worker_first` に `/r/*` と `/og/*` を足す。互換フラグ（`nodejs_compat` など）は足さない。
+- Hono の API（`/api` 配下）とは別の処理として `worker/index.ts` から振り分ける。API の「すべて `no-store`」「JSON の 404」は `/r/*` と `/og/*` には掛けない。
+
+**`GET /r/:id`（HTML）**
+
+1. 静的ファイルの `index.html` を `ASSETS` から取る。
+2. D1 から路線を読む（`hidden = 0` のものだけ）。見つかれば、`<head>` の次の項目を**置き換える**（足さない）。値は必ず属性・本文用にエスケープする（路線名は利用者の入力）。
+   - `<title>`、`og:title`、`twitter:title`: `<路線名>｜ドット路線メーカー`
+   - `og:description`、`twitter:description`、`description`: `<区間（今の区間の表記と同じ）>・<駅の数>駅。首都圏の実在の駅をつないで、自分だけの路線と電車を作ろう。`
+   - `og:url`: `https://dot-rosen.na2kera.com/r/<id>?v=<今の rev の先頭 6 桁>`
+   - `og:image`、`twitter:image`: `https://dot-rosen.na2kera.com/og/<id>.png?v=<今の rev の先頭 6 桁>`（リクエストに付いてきた `v` ではなく、サーバーが今持っている rev から作る）
+   - `og:image:alt`: `<路線名>の路線カード。電車の正面と側面、路線図。`
+   - `og:image:width` / `height` は 1200 / 630 のまま。
+3. 路線が無い・非公開・`id` の形が違う・D1 の失敗・差し込みの失敗のときは、`index.html` を**何も変えずに**返す（状態は 200 のまま。画面側が「見つかりません」を出す）。500 は返さない。
+4. 応答は `Content-Type: text/html; charset=utf-8`、`Cache-Control: no-cache`。書き換えた本文に、元の `ETag` と `Content-Length` を付けない。
+5. `GET` と `HEAD` 以外は、静的ファイルの応答にそのまま任せる。
+
+差し込みは、文字列を受け取って文字列を返す純粋な関数にして、Node 上のテストで確かめる（`HTMLRewriter` には頼らない）。
+
+**`GET /og/:id.png`（PNG）**
+
+- 路線を読み、1200×630 の PNG を組み立てて返す。`Content-Type: image/png`。
+- `Cache-Control: public, max-age=300`（長くしない。非公開にした路線の絵が配られ続けないように）。
+- 無い・非公開・`id` の形が違う・組み立ての失敗は、`/og.png`（アプリ共通の絵）へ 302。`Cache-Control: no-store`。
+- 絵の組み立ては `shared/` に置き、Worker と見本づくりの道具（Node）で同じものを使う。利用者の入力（路線名、駅の数、両数、色、ロゴ）で**投げない**。フォントに無い文字は飛ばし、はみ出す文字は切り詰める。
+- PNG の圧縮は `CompressionStream("deflate")` を使う（Worker に同期の圧縮が無いため、非同期の書き出しを足す）。色数が少ないので、パレット形式（8 ビット）で書き出して小さくする。
+- 回数制限は掛けない（読み取り役は IP が共通のため）。
+
+**画面側**
+
+- X の投稿画面は `https://x.com/intent/post?text=<全文>` で開く。URL とハッシュタグも `text` の中に入れる（`url` や `hashtags` の引数に分けると、決めた改行にならない）。
+- リンク（`<a target="_blank" rel="noopener">`）で開く。押したあとに通信を挟んでから `window.open` する形にはしない（スマホで開かなくなる）。
+- 押せる条件は「保存の状態が `clean`、かつ `rev` が分かっている」。
+- `/r/:id?v=...` の `v` は、画面では無視する。
+
 ## 9. 画面で伝えること（公開運用のため）
 
 - 保存の前に「この URL を知っている人は誰でも見られます」と表示する。

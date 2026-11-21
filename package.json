@@ -16,6 +16,7 @@
     "data:build": "node tools/run.mjs tools/build-stations.ts",
     "font:build": "node tools/run.mjs tools/build-font.ts",
     "og:build": "node tools/run.mjs tools/og-image.ts",
+    "og:sheet": "node tools/run.mjs tools/og-route-sheet.ts",
     "icon:build": "node tools/run.mjs tools/icon-image.ts",
     "sprites:sheet": "node tools/run.mjs tools/sprites-sheet.ts",
     "parts:audit": "node tools/run.mjs tools/parts-audit.ts",

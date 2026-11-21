@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20261118.1 2026-11-01
 interface __BaseEnv_Env {
 	DB: D1Database;
+	ASSETS: Fetcher;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

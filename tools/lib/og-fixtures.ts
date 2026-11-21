@@ -105,6 +105,17 @@ export function ogFixtures(kit: FixtureKit): OgFixture[] {
         train: { ...design(9, 5), logo: { bits: PRESET_LOGOS[5].bits, fg: "pink", bg: "white" } },
       }),
     },
+    {
+      id: "11-long-ends",
+      label: "始発と終点の駅名が長い",
+      route: kit.route({
+        name: "ながいなまえ線",
+        symbol: "NG",
+        lineColor: "sky",
+        stations: ["東京ディズニーランド･ステーション", "舞浜", "新宿", "南町田グランベリーパーク"],
+        train: design(4, 10),
+      }),
+    },
   ];
   return list;
 }

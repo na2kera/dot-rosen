@@ -99,6 +99,25 @@ function disk(img: IndexedImage, cx: number, cy: number, r: number, hole: number
   }
 }
 
+/**
+ * 区間の表記（今の区間の表記と同じ）。入らないときは、始発と終点の駅名をそれぞれ切り詰めて「⇄」を残す
+ * （環状線は起点の駅名を切り詰める）
+ */
+function sectionLabel(route: RouteData, lookup: StationLookup, font: BitmapFont): string {
+  const full = visible(font, routeSectionLabel(route, lookup));
+  if (textWidth(font, full) <= SECTION_MAX) return full;
+  const names = route.stations.map((id) => visible(font, lookup(id)?.name ?? "?"));
+  if (route.loop && names.length >= 3) {
+    const room = SECTION_MAX - textWidth(font, "環状（起点 ）");
+    return `環状（起点 ${ellipsize(font, names[0], room)}）`;
+  }
+  if (names.length >= 2) {
+    const half = Math.floor((SECTION_MAX - textWidth(font, " ⇄ ")) / 2);
+    return `${ellipsize(font, names[0], half)} ⇄ ${ellipsize(font, names[names.length - 1], half)}`;
+  }
+  return ellipsize(font, full, SECTION_MAX);
+}
+
 /** 路線ごとの絵（600×315 の色番号画像）を組み立てる */
 export function renderRouteOg(input: OgInput): IndexedImage {
   const { route, lookup, font } = input;
@@ -143,7 +162,7 @@ export function renderRouteOg(input: OgInput): IndexedImage {
 
   // ---- 路線図: 選んだ駅をつないだ線と、入るぶんの駅名。右に区間 ----
   {
-    const label = ellipsize(font, visible(font, routeSectionLabel(route, lookup)), SECTION_MAX);
+    const label = sectionLabel(route, lookup, font);
     const labelW = textWidth(font, label);
     const labelX = OG_W - SIDE - labelW;
     if (label) text(labelX, LINE_Y + LINE_H / 2 - 8, label, 1, PAPER);

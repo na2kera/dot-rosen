@@ -1,6 +1,7 @@
 // 候補1つ（小さな絵と名前）。画面に入ったときに絵を描く。選んでいるものには枠を付ける
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { IndexedImage } from "../../../shared/pix/index.ts";
+import { CardLabel } from "./label-break.tsx";
 import { cachedThumb, requestThumb } from "./thumbs.ts";
 
 type Props = {
@@ -56,7 +57,7 @@ export function Thumb({ thumbKey, make, width, height, scale = 1, label, selecte
   return (
     <button ref={btn} type="button" className={`thumb ${className ?? ""}`} aria-pressed={selected} onClick={onSelect}>
       <canvas ref={canvas} className="pix thumb__img" width={width} height={height} style={{ width: width * scale, height: height * scale }} aria-hidden="true" />
-      <span className="thumb__label">{label}</span>
+      <CardLabel text={label} />
     </button>
   );
 }

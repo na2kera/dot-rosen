@@ -19,6 +19,8 @@ export const STORAGE_KEYS = {
   print: "dot-rosen:print",
   // 読み戻せなかった作りかけの退避先（上書きする前に元の文字列を残す）
   draftBackup: "dot-rosen:draft-backup",
+  // 「じぶんの」ロゴ（「じぶんで描く」の「できた」で描いたロゴの点のデータ。1 つだけ）
+  myLogo: "dot-rosen:my-logo",
 } as const;
 
 /** 保存先の状態。ok = 書ける / readonly = 読めるが書けない / memory = 読み書きできない（開いている間だけ覚える） */

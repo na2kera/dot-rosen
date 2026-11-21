@@ -2,7 +2,7 @@
 import { COLOR_IDS, type ColorId } from "./colors.ts";
 import { isLogoBits, PRESET_LOGOS } from "./logos.ts";
 
-/** 候補1つ（ID は英字、label は画面に出す名前） */
+/** 候補1つ（ID は英字、label は画面に出す名前。選択肢のカードに 2 行までで収まる短い名前にする） */
 export type Choice<T extends string> = { readonly id: T; readonly label: string };
 
 const choices = <const T extends string>(list: readonly (readonly [T, string])[]): readonly Choice<T>[] =>
@@ -14,30 +14,30 @@ export const FACE_CHOICES = {
   contour: choices([
     ["square", "四角"],
     ["round", "角丸"],
-    ["taper", "上すぼまり"],
+    ["taper", "台形"],
     ["dome", "丸"],
   ]),
   window: choices([
-    ["one", "1枚の大窓"],
+    ["one", "1枚窓"],
     ["two", "2枚窓"],
     ["three", "3枚窓"],
-    ["pano", "曲面のパノラマ窓"],
+    ["pano", "曲面窓"],
     ["small", "小窓"],
   ]),
   door: choices([
     ["none", "なし"],
     ["center", "中央"],
-    ["side", "片側寄せ"],
+    ["side", "片寄せ"],
   ]),
   lightShape: choices([
     ["round", "丸形"],
     ["square", "角形"],
-    ["led", "横長の LED 風"],
+    ["led", "横長LED"],
   ]),
   lightPos: choices([
     ["top", "窓の上"],
-    ["mid", "窓の下の両脇"],
-    ["low", "腰の低い位置"],
+    ["mid", "窓の下"],
+    ["low", "低め"],
   ]),
   sign: choices([
     ["none", "なし"],
@@ -50,10 +50,10 @@ export const FACE_CHOICES = {
     ["large", "大"],
   ]),
   paint: choices([
-    ["plain", "車体色のまま"],
-    ["blackface", "窓まわりを黒"],
-    ["band", "帯を回す"],
-    ["warning", "警戒色のしま模様"],
+    ["plain", "車体色"],
+    ["blackface", "黒い顔"],
+    ["band", "帯入り"],
+    ["warning", "警戒色"],
   ]),
 } as const;
 
@@ -61,36 +61,36 @@ export const FACE_CHOICES = {
 
 export const SIDE_CHOICES = {
   nose: choices([
-    ["flat", "切妻（垂直）"],
-    ["slope", "ゆるい傾斜"],
+    ["flat", "切妻"],
+    ["slope", "傾斜"],
     ["round", "丸み"],
     ["stream", "流線形"],
-    ["long", "ロングノーズ"],
-    ["bonnet", "ボンネット型"],
+    ["long", "ロング"],
+    ["bonnet", "ボンネット"],
   ]),
   window: choices([
-    ["big", "四角い大窓"],
-    ["small", "小窓が並ぶ"],
+    ["big", "大窓"],
+    ["small", "小窓"],
     ["round", "丸窓"],
-    ["ribbon", "横長の連続窓"],
+    ["ribbon", "連続窓"],
   ]),
   doors: choices([
-    ["two", "片側2ドア"],
+    ["two", "2ドア"],
     ["three", "3ドア"],
     ["four", "4ドア"],
   ]),
   roof: choices([
-    ["panto", "パンタグラフのみ"],
-    ["cooler", "クーラー付き"],
+    ["panto", "パンタ"],
+    ["cooler", "冷房"],
     ["none", "なし"],
   ]),
   band: choices([
     ["none", "帯なし"],
     ["one", "1本帯"],
     ["two", "2本帯"],
-    ["stripe", "斜めストライプ"],
-    ["dots", "ドット柄"],
-    ["split", "上下塗り分け"],
+    ["stripe", "ななめ"],
+    ["dots", "ドット"],
+    ["split", "塗分け"],
   ]),
 } as const;
 

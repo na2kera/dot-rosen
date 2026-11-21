@@ -311,43 +311,96 @@
 
 .train__preview {
   flex: none;
-  padding: 8px 0 4px;
+  padding: 4px 0 var(--shadow);
   background: var(--c-panel);
 }
 
-.train__top {
+/* 顔と編成を横に 1 段（タップで大きく見る画面） */
+.train__view {
+  position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 0 var(--pad);
+  align-items: flex-end;
+  gap: 8px;
+  padding: 0 0 0 var(--pad);
+  cursor: zoom-in;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.train__view:focus-visible {
+  outline: var(--line) dashed var(--c-ink);
+  outline-offset: -2px;
 }
 
 .train__face {
   flex: none;
-  display: grid;
-  place-items: end center;
-  width: 136px;
-  min-height: 152px;
+  display: block;
 }
 
 .train__face[data-pop="true"] {
   animation: pop-in 200ms var(--steps);
 }
 
-.train__tools {
+.train__face canvas,
+.train__consist canvas {
+  display: block;
+}
+
+.train__consist-wrap {
+  position: relative;
   flex: 1;
   min-width: 0;
+}
+
+.train__consist {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  padding-right: var(--pad);
+}
+
+.train__consist::-webkit-scrollbar {
+  display: none;
+}
+
+/* 右端の「続きがある」印。半透明やグラデーションは使わず、地の色の点を段階的に細かくする */
+.train__fade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='4' shape-rendering='crispEdges' fill='%23fffdf6'%3E%3Crect x='0' y='0' width='2' height='2'/%3E%3Crect x='4' y='2' width='2' height='2'/%3E%3Crect x='8' y='0' width='2' height='2'/%3E%3Crect x='10' y='2' width='2' height='2'/%3E%3Crect x='12' y='0' width='2' height='2'/%3E%3Crect x='14' y='2' width='2' height='2'/%3E%3Crect x='16' y='0' width='4' height='2'/%3E%3Crect x='16' y='2' width='2' height='2'/%3E%3Crect x='20' y='0' width='4' height='4'/%3E%3C/svg%3E");
+  background-size: 24px 4px;
+}
+
+/* 虫めがねの印（大きく見る） */
+.train__zoom {
+  position: absolute;
+  top: 0;
+  right: 4px;
   display: grid;
-  gap: 10px;
-  padding: 0 var(--shadow) var(--shadow) 0;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: var(--line) solid var(--c-ink);
+  background: var(--c-panel);
+  color: var(--c-ink);
+  pointer-events: none;
+}
+
+/* ランダム・1つ戻す（細い 1 行） */
+.train__tools {
+  display: flex;
+  gap: 12px;
+  padding: 4px calc(var(--pad) + var(--shadow)) 0 var(--pad);
 }
 
 .train__tools .btn {
-  width: 100%;
-}
-
-.train__dice {
-  min-height: 56px;
+  flex: 1;
+  min-height: 40px;
+  padding: 4px 8px;
 }
 
 .train__dice[data-rolling] .picon {
@@ -370,25 +423,35 @@
   100% { transform: rotate(-360deg); }
 }
 
-.train__consist {
-  margin-top: 0;
-  padding: 0 var(--pad) 4px;
+/* 大きく見る画面 */
+.bigview {
+  display: grid;
+  gap: 8px;
+}
+
+.bigview .tabs {
+  border: var(--line) solid var(--c-ink);
+}
+
+.bigview__face {
+  display: flex;
+  justify-content: center;
+}
+
+.bigview__consist {
+  margin: 0 calc(var(--pad) * -1);
+  padding: 0 var(--pad);
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  scrollbar-width: thin;
 }
 
-.train__consist canvas {
+.bigview canvas {
   display: block;
 }
 
-.train__cars-note {
-  padding: 0 var(--pad);
-}
-
-.train__preview[data-mono="true"] .train__face,
-.train__preview[data-mono="true"] .train__consist canvas {
+.bigview[data-mono="true"] .bigview__face canvas,
+.bigview[data-mono="true"] .bigview__consist canvas {
   outline: var(--line) solid var(--c-weak);
 }
 
@@ -429,36 +492,67 @@
   padding: 2px var(--shadow) var(--shadow) 2px;
 }
 
-.thumbs--face {
+/* 選択肢は 5 列（1 つの部位を 1 段に。6 つあるものだけ 2 段）。絵は等倍のまま、余白と文字を詰める */
+.thumbs--grid,
+.presets {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
 }
 
-.thumbs--face .thumb__label {
+.thumbs--grid .thumb,
+.presets .thumb {
+  min-height: 56px;
+  padding: 4px 0 2px;
+}
+
+.thumbs--grid .thumb[aria-pressed="true"],
+.presets .thumb[aria-pressed="true"] {
+  padding: 2px 0 0;
+}
+
+.thumbs--grid .thumb__label,
+.presets .thumb__label {
   display: flex;
   align-items: center;
-  min-height: 48px;
+  justify-content: center;
   white-space: normal;
   text-align: center;
   overflow-wrap: anywhere;
 }
 
-/* 側面は横に長いので、横にスクロールして選ぶ */
-.thumbs--side {
-  display: flex;
-  gap: 10px;
-  margin: 0 calc(var(--pad) * -1);
-  padding: 2px calc(var(--pad) + var(--shadow)) calc(var(--shadow) + 4px) var(--pad);
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
-  scroll-padding: 0 var(--pad);
+.thumb__label--keep {
+  word-break: keep-all;
 }
 
-.thumbs--side .thumb {
-  flex: none;
-  scroll-snap-align: start;
+/* 1 列に縦に並べる（側面のドア。1 両ぶんの絵の右に名前） */
+.thumbs--rows {
+  display: grid;
+  gap: 4px;
+}
+
+.thumbs--rows .thumb {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  justify-items: start;
+  gap: 8px;
+  min-height: 56px;
+  padding: 4px 8px;
+}
+
+.thumbs--rows .thumb[aria-pressed="true"] {
+  padding: 2px 6px;
+}
+
+.thumbs--rows .thumb__label {
+  white-space: normal;
+}
+
+.thumbs--grid .thumb[aria-pressed="true"] .thumb__label,
+.presets .thumb[aria-pressed="true"] .thumb__label {
+  /* 幅 360 でも 3 文字が 1 行に入るよう、反転した名前の左右の余白はつけない */
+  min-width: 24px;
+  padding: 0;
 }
 
 .cars {
@@ -485,29 +579,77 @@
   margin-left: 4px;
 }
 
-/* ロゴ */
-.logo-ed__tools .btn-group {
+/* ロゴのタブ */
+.presets {
+  margin-top: 8px;
+  padding: 2px var(--shadow) var(--shadow) 2px;
+}
+
+.logo-tab__draw {
+  margin-top: 12px;
+  padding: 0 var(--shadow) var(--shadow) 0;
+}
+
+.logo-tab__note {
+  margin-top: 8px;
+  text-align: center;
+  /* 空白の所で折り返す（「実在の会社のロゴを」／「そのまま使わないでください」） */
+  word-break: keep-all;
+}
+
+/* じぶんで描く（シート）。スクロールせずに全部が収まるよう、高さを決めて描く場所を伸び縮みさせる */
+.sheet--draw {
+  /* 高い画面では、マス目がいちばん大きくなる高さで止める（上下に空きを作らない） */
+  height: min(calc(100% - var(--board-h) * 2), 580px);
+}
+
+.sheet--draw .sheet__title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sheet--draw .sheet__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  padding: 12px var(--pad);
+}
+
+.draw {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.draw__tools {
   display: flex;
 }
 
-.logo-ed__tool {
+.draw__tool {
   flex: 1;
   gap: 4px;
   padding: 8px 4px;
 }
 
-.logo-ed__tool[aria-checked="true"] {
+.draw__tool[aria-checked="true"] {
   background: var(--c-ink);
   color: var(--c-on-ink);
 }
 
-.logo-ed__stage {
+.draw__stage {
+  flex: 1;
+  min-height: 0;
   display: flex;
+  align-items: center;
   justify-content: center;
-  margin-top: 12px;
 }
 
-.logo-ed__canvas {
+.draw__canvas {
   display: block;
   border: var(--line) solid var(--c-ink);
   box-sizing: content-box;
@@ -518,25 +660,30 @@
   cursor: crosshair;
 }
 
-.logo-ed__actions {
+.draw__foot {
   display: flex;
-  justify-content: center;
-  gap: 12px;
-  margin-top: 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.draw__actions {
+  display: flex;
+  gap: 8px;
   padding: 0 var(--shadow) var(--shadow) 0;
 }
 
-.logo-ed__note {
-  margin-top: 8px;
-  text-align: center;
+.draw__actions .btn {
+  padding: 8px;
 }
 
-.presets {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
-  padding: 2px var(--shadow) var(--shadow) 2px;
+.draw__ontrain {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.draw__ontrain canvas {
+  display: block;
 }
 
 /* ---- できあがり ---- */

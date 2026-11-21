@@ -4,11 +4,17 @@ import { PixelCanvas } from "../ui/PixelCanvas.tsx";
 import { Tabs } from "../ui/Tabs.tsx";
 import type { RenderedCard } from "./useCard.ts";
 
-type Mode = "color" | "print";
+export type ViewMode = "color" | "print";
+type Mode = ViewMode;
 const MODES: readonly { id: Mode; label: string }[] = [
   { id: "color", label: "カラー" },
   { id: "print", label: "印刷プレビュー" },
 ];
+
+/** 「カラー／印刷プレビュー」の切り替え（電車をつくるの「大きく見る画面」でも使う） */
+export function ViewModeTabs({ value, onChange, label }: { value: ViewMode; onChange(m: ViewMode): void; label: string }) {
+  return <Tabs<Mode> tabs={MODES} value={value} onChange={onChange} label={label} />;
+}
 
 export function CardView({ card, className }: { card: RenderedCard | null; className?: string }) {
   const [mode, setMode] = useState<Mode>("color");
@@ -24,7 +30,7 @@ export function CardView({ card, className }: { card: RenderedCard | null; class
 
   return (
     <div className={`cardview ${className ?? ""}`}>
-      <Tabs<Mode> tabs={MODES} value={mode} onChange={setMode} label="カードの見え方" />
+      <ViewModeTabs value={mode} onChange={setMode} label="カードの見え方" />
       <div className="cardview__scroll" data-mode={mode}>
         {card && "error" in card ? (
           <p className="cardview__msg text-alert">カードを描けませんでした（{card.error}）</p>

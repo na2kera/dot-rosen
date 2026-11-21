@@ -4,6 +4,7 @@ import { useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { createStore } from "../store/create-store.ts";
 import { Backdrop } from "./Backdrop.tsx";
 import { Button } from "./Button.tsx";
+import { pushEscape } from "./escape.ts";
 
 export type DialogAction<T> = {
   value: T;
@@ -69,12 +70,10 @@ export function DialogHost() {
     if (!req) return;
     const prev = document.activeElement as HTMLElement | null;
     first.current?.querySelector<HTMLButtonElement>("button:last-child")?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close(req, req.cancelValue);
-    };
-    window.addEventListener("keydown", onKey);
+    // Esc はいちばん手前（このダイアログ）だけが受け取る。下のシートは閉じない
+    const pop = pushEscape(() => close(req, req.cancelValue));
     return () => {
-      window.removeEventListener("keydown", onKey);
+      pop();
       prev?.focus?.();
     };
   }, [req]);

@@ -232,7 +232,7 @@ const art: readonly [string, string, readonly string[]][] = [
   ],
   [
     "bolt",
-    "いなずま",
+    "雷",
     [
       "........#####...",
       ".......#####....",
